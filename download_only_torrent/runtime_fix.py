@@ -1,26 +1,36 @@
 from __future__ import annotations
 
+from .port_config import ensure_listen_port, listen_interfaces
+
+
+def apply_listen_port(engine, port: int) -> None:
+    """Apply one explicit TCP/UDP listen port to libtorrent."""
+
+    engine.session.apply_settings(
+        {
+            "listen_interfaces": listen_interfaces(port),
+            # A user-selected port should be honored rather than silently
+            # falling back to another value. Diagnostics will expose bind errors.
+            "listen_system_port_fallback": False,
+        }
+    )
+
 
 def apply_runtime_network_fix(engine) -> None:
-    """Apply Windows networking fixes and remove active-torrent queue limits.
+    """Apply the persisted listen port and remove active-torrent queue limits.
 
-    The default libtorrent listen port is 6881. Windows/Hyper-V/WSL/VPN stacks
-    can reserve that port and cause every listen socket to fail. libtorrent also
-    uses the listen UDP socket for DHT, UDP trackers and uTP, so a failed listener
-    can leave peer discovery at zero.
-
-    Port 0 asks the OS to select a currently available ephemeral port. Since this
-    client never seeds, keeping a stable incoming port across launches is not
-    important; reliable outbound discovery is more useful.
+    On first launch an unused TCP+UDP port is chosen and stored in QSettings.
+    Later launches reuse that port until the user changes it in Settings.
 
     This application explicitly disables auto-management on added torrents, but
     the active_* limits are also set to unlimited so there is no hidden session
     queue that can cap the number of simultaneous downloads.
     """
 
+    port = ensure_listen_port()
     settings = {
-        "listen_interfaces": "0.0.0.0:0,[::]:0",
-        "listen_system_port_fallback": True,
+        "listen_interfaces": listen_interfaces(port),
+        "listen_system_port_fallback": False,
         "active_downloads": -1,
         "active_seeds": -1,
         "active_checking": -1,
@@ -30,18 +40,10 @@ def apply_runtime_network_fix(engine) -> None:
         "active_limit": -1,
     }
 
-    # Apply the network settings first because they are required for peer
-    # discovery. Some older bindings may not expose every active_* key; in that
-    # case retry them individually without sacrificing the listen-port fix.
     try:
         engine.session.apply_settings(settings)
     except Exception:
-        engine.session.apply_settings(
-            {
-                "listen_interfaces": "0.0.0.0:0,[::]:0",
-                "listen_system_port_fallback": True,
-            }
-        )
+        apply_listen_port(engine, port)
         for key, value in settings.items():
             if not key.startswith("active_"):
                 continue
