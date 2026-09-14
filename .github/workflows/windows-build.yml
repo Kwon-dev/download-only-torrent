@@ -28,6 +28,14 @@ jobs:
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Cache patched libtorrent toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}\download-only-torrent-deps
+            C:\vcpkg\installed\x64-windows-static-md
+          key: patched-libtorrent-${{ runner.os }}-py311-v2.1.1-boost1.91.0-${{ hashFiles('tools/build_patched_libtorrent.ps1', 'tools/patch_libtorrent_no_piece_upload.py') }}
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
@@ -49,7 +57,7 @@ jobs:
 
       - name: Build Windows app folder
         run: >-
-          pyinstaller --noconfirm --clean --onedir --windowed
+          pyinstaller --noconfirm --clean --onedir --windowed --noupx
           --name DownloadOnlyTorrent
           --icon assets/app.ico
           --collect-all libtorrent
@@ -70,18 +78,39 @@ jobs:
           print("Embedded icon resources verified.")
           '@ | python -
 
-      - name: Verify packaged libtorrent is hard-disabled build
+      - name: Verify packaged libtorrent is exact patched build
         shell: pwsh
         run: |
           @'
+          import hashlib
+          import importlib.util
           from pathlib import Path
+
           marker = b"DOWNLOAD_ONLY_TORRENT_PIECE_UPLOAD_DISABLED"
+          spec = importlib.util.find_spec("libtorrent")
+          assert spec is not None and spec.origin, "installed libtorrent not found"
+          installed = Path(spec.origin).resolve()
+          installed_bytes = installed.read_bytes()
+          assert marker in installed_bytes, "installed libtorrent is not the patched build"
+          expected_sha256 = hashlib.sha256(installed_bytes).hexdigest()
+
           modules = list(Path(r"dist\DownloadOnlyTorrent").rglob("libtorrent*.pyd"))
           assert modules, "packaged libtorrent .pyd not found"
-          assert any(marker in p.read_bytes() for p in modules), (
-              "packaged libtorrent does not contain the compile-time hard-disable marker"
+
+          exact_matches = []
+          for module in modules:
+              data = module.read_bytes()
+              digest = hashlib.sha256(data).hexdigest()
+              print(f"Packaged candidate: {module} SHA-256={digest}")
+              if digest == expected_sha256:
+                  assert marker in data, "exact packaged module unexpectedly lost hard-disable marker"
+                  exact_matches.append(module)
+
+          assert exact_matches, (
+              "packaged libtorrent is not byte-for-byte identical to the verified patched module; "
+              f"expected SHA-256 {expected_sha256}"
           )
-          print("Packaged patched libtorrent verified:", modules)
+          print("Packaged patched libtorrent verified:", exact_matches)
           '@ | python -
 
       - name: Add licenses and build provenance
