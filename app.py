@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from download_only_torrent import __version__
 from download_only_torrent.app_icon import make_app_icon
 from download_only_torrent.config import AppConfig
+from download_only_torrent.controls_ui import install_controls_ui
 from download_only_torrent.debug_ui import install_debug_ui
 from download_only_torrent.engine import TorrentEngine
 from download_only_torrent.runtime_fix import (
@@ -62,6 +63,7 @@ def main() -> int:
     except Exception:
         pass
     install_debug_ui(window)
+    install_controls_ui(window)
     window.show()
     return app.exec()
 
