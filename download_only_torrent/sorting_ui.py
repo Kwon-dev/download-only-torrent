@@ -125,6 +125,11 @@ def _install_file_selection_sorting() -> None:
                     self._file_sort_order,
                     self._sort_sizes,
                 )
+                # Sorting reparents the QTreeWidgetItem hierarchy, and Qt may
+                # reset expanded state while doing so. The original file picker
+                # opened every folder by default, so preserve that behavior both
+                # on first show and after every header sort.
+                self.tree.expandAll()
             finally:
                 self.tree.setUpdatesEnabled(True)
 
