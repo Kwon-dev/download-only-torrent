@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import libtorrent as lt
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QItemSelectionModel, QSettings, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QHeaderView,
     QInputDialog,
@@ -24,6 +25,7 @@ TEXT = {
         "row_height": "Row height...",
         "remove_title": "Remove torrent",
         "remove_text": "Remove '{name}' from the download list?",
+        "remove_many_text": "Remove {count} selected torrents from the download list?",
         "remove_info": (
             "By default only the torrent task is removed. Downloaded data and "
             "the original .torrent file are kept."
@@ -42,6 +44,7 @@ TEXT = {
         "row_height": "행 높이...",
         "remove_title": "토렌트 제거",
         "remove_text": "'{name}' 항목을 다운로드 목록에서 제거할까요?",
+        "remove_many_text": "선택한 {count}개의 토렌트를 다운로드 목록에서 제거할까요?",
         "remove_info": (
             "기본적으로 토렌트 작업만 목록/세션에서 제거됩니다. "
             "다운로드된 데이터와 원본 .torrent 파일은 그대로 유지됩니다."
@@ -79,11 +82,11 @@ def _delete_flag_candidates() -> list[object]:
     return result
 
 
-def _remove_task(window, task_id: str, delete_data: bool) -> bool:
+def _remove_task(window, task_id: str, delete_data: bool) -> tuple[bool, str | None]:
     engine = window.engine
     task = engine.tasks.get(task_id)
     if task is None:
-        return False
+        return False, None
 
     was_paused = bool(task.paused)
     try:
@@ -114,32 +117,42 @@ def _remove_task(window, task_id: str, delete_data: bool) -> bool:
                 engine._kick_discovery(task.handle)
             except Exception:
                 pass
-        QMessageBox.critical(
-            window,
-            _t(window.config.language, "delete_failed"),
-            str(exc),
-        )
-        return False
+        return False, f"{task.name}: {exc}"
 
     engine.tasks.pop(task_id, None)
-    try:
-        engine._persist_tasks()
-    except Exception:
-        pass
     window._remove_row(task_id)
-    return True
+    return True, None
 
 
-def _confirm_remove(window, task_id: str) -> None:
-    task = window.engine.tasks.get(task_id)
-    if task is None:
+def _selected_task_ids(window) -> list[str]:
+    selection = window.table.selectionModel()
+    if selection is None:
+        return []
+
+    ids: list[str] = []
+    for index in sorted(selection.selectedRows(), key=lambda idx: idx.row()):
+        task_id = window._task_id_at_row(index.row())
+        if task_id and task_id not in ids:
+            ids.append(task_id)
+    return ids
+
+
+def _confirm_remove(window, task_ids: list[str]) -> None:
+    task_ids = [task_id for task_id in task_ids if task_id in window.engine.tasks]
+    if not task_ids:
         return
 
     lang = window.config.language
     box = QMessageBox(window)
     box.setIcon(QMessageBox.Icon.Question)
     box.setWindowTitle(_t(lang, "remove_title"))
-    box.setText(_t(lang, "remove_text", name=task.name))
+
+    if len(task_ids) == 1:
+        task = window.engine.tasks[task_ids[0]]
+        box.setText(_t(lang, "remove_text", name=task.name))
+    else:
+        box.setText(_t(lang, "remove_many_text", count=len(task_ids)))
+
     box.setInformativeText(_t(lang, "remove_info"))
     box.setStandardButtons(
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
@@ -158,7 +171,23 @@ def _confirm_remove(window, task_id: str) -> None:
     if box.exec() != QMessageBox.StandardButton.Yes:
         return
 
-    _remove_task(window, task_id, delete_data.isChecked())
+    errors: list[str] = []
+    for task_id in list(task_ids):
+        _, error = _remove_task(window, task_id, delete_data.isChecked())
+        if error:
+            errors.append(error)
+
+    try:
+        window.engine._persist_tasks()
+    except Exception:
+        pass
+
+    if errors:
+        QMessageBox.critical(
+            window,
+            _t(lang, "delete_failed"),
+            "\n".join(errors),
+        )
 
 
 def _set_global_row_height(window, height: int) -> None:
@@ -192,6 +221,8 @@ def _ask_row_height(window) -> None:
 def _configure_stable_table(window) -> None:
     table = window.table
     table.setWordWrap(False)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 
     vertical = table.verticalHeader()
     vertical.setMinimumSectionSize(20)
@@ -231,7 +262,7 @@ def _install_shortcut(window, sequence: str, callback) -> QShortcut:
 
 
 def install_controls_ui(window) -> None:
-    """Install removal confirmation, shortcuts, and stable user-resizable table sizing."""
+    """Install batch controls, shortcuts, and stable user-resizable table sizing."""
 
     _configure_stable_table(window)
 
@@ -240,31 +271,51 @@ def install_controls_ui(window) -> None:
     except Exception:
         pass
 
-    def selected_task_id() -> str | None:
-        return window._selected_task_id()
+    def selected_task_ids() -> list[str]:
+        return _selected_task_ids(window)
 
     def toggle_pause() -> None:
-        task_id = selected_task_id()
-        if not task_id:
+        task_ids = selected_task_ids()
+        if not task_ids:
             return
-        if window.engine.is_paused(task_id):
-            window.engine.resume(task_id)
-        else:
-            window.engine.pause(task_id)
+
+        # If any selected task is running, Space pauses all selected tasks.
+        # If all selected tasks are paused, Space resumes them all.
+        any_running = any(
+            not window.engine.is_paused(task_id) for task_id in task_ids
+        )
+        for task_id in task_ids:
+            if any_running:
+                if not window.engine.is_paused(task_id):
+                    window.engine.pause(task_id)
+            else:
+                if window.engine.is_paused(task_id):
+                    window.engine.resume(task_id)
+
+    def pause_selected() -> None:
+        for task_id in selected_task_ids():
+            if not window.engine.is_paused(task_id):
+                window.engine.pause(task_id)
+
+    def resume_selected() -> None:
+        for task_id in selected_task_ids():
+            if window.engine.is_paused(task_id):
+                window.engine.resume(task_id)
 
     def remove_selected() -> None:
-        task_id = selected_task_id()
-        if task_id:
-            _confirm_remove(window, task_id)
+        _confirm_remove(window, selected_task_ids())
 
     def show_properties() -> None:
-        task_id = selected_task_id()
-        if task_id:
-            PropertiesDialog(window, task_id).exec()
+        task_ids = selected_task_ids()
+        if task_ids:
+            PropertiesDialog(window, task_ids[0]).exec()
 
     def change_row_height(delta: int) -> None:
         current = int(QSettings().value("ui/row_height", 30))
         _set_global_row_height(window, current + delta)
+
+    def select_all_rows() -> None:
+        window.table.selectAll()
 
     shortcuts = [
         _install_shortcut(window, "Delete", remove_selected),
@@ -275,17 +326,28 @@ def install_controls_ui(window) -> None:
         _install_shortcut(window, "Alt+Return", show_properties),
         _install_shortcut(window, "Ctrl++", lambda: change_row_height(2)),
         _install_shortcut(window, "Ctrl+-", lambda: change_row_height(-2)),
+        _install_shortcut(window, "Ctrl+A", select_all_rows),
     ]
     # Keep Python references alive for the lifetime of the window.
     window._torrent_shortcuts = shortcuts
 
     def show_menu(pos) -> None:
         row = window.table.indexAt(pos).row()
-        task_id = window._task_id_at_row(row)
-        if not task_id:
+        clicked_task_id = window._task_id_at_row(row)
+        if not clicked_task_id:
             return
 
-        window.table.selectRow(row)
+        selection = window.table.selectionModel()
+        selected_rows = {index.row() for index in selection.selectedRows()} if selection else set()
+
+        # Right-clicking an already-selected row keeps the whole multi-selection.
+        # Right-clicking outside the selection selects just that row.
+        if row not in selected_rows:
+            window.table.clearSelection()
+            window.table.selectRow(row)
+            window.table.setCurrentCell(row, 0)
+
+        task_ids = selected_task_ids()
         lang = window.config.language
         menu = QMenu(window)
         menu.setStyleSheet(
@@ -306,19 +368,24 @@ def install_controls_ui(window) -> None:
         properties_action.setShortcut(QKeySequence("Alt+Return"))
         row_height_action = menu.addAction(_t(lang, "row_height"))
 
-        paused = window.engine.is_paused(task_id)
-        pause_action.setVisible(not paused)
-        resume_action.setVisible(paused)
+        pause_action.setEnabled(
+            any(not window.engine.is_paused(task_id) for task_id in task_ids)
+        )
+        resume_action.setEnabled(
+            any(window.engine.is_paused(task_id) for task_id in task_ids)
+        )
+        properties_action.setEnabled(bool(task_ids))
 
         chosen = menu.exec(window.table.viewport().mapToGlobal(pos))
         if chosen is pause_action:
-            window.engine.pause(task_id)
+            pause_selected()
         elif chosen is resume_action:
-            window.engine.resume(task_id)
+            resume_selected()
         elif chosen is remove_action:
-            _confirm_remove(window, task_id)
+            _confirm_remove(window, task_ids)
         elif chosen is properties_action:
-            PropertiesDialog(window, task_id).exec()
+            # Properties is intentionally for the row that was right-clicked.
+            PropertiesDialog(window, clicked_task_id).exec()
         elif chosen is row_height_action:
             _ask_row_height(window)
 
