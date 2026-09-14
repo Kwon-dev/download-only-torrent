@@ -13,9 +13,6 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
-    env:
-      PATCHED_LIBTORRENT_CACHE: ${{ runner.temp }}\patched-libtorrent-cache
-      PATCHED_LIBTORRENT_STAGE: ${{ runner.temp }}\patched-libtorrent-stage
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,7 +33,7 @@ jobs:
         id: libtorrent-cache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ env.PATCHED_LIBTORRENT_CACHE }}
+          path: ${{ runner.temp }}\patched-libtorrent-cache
           key: patched-libtorrent-${{ runner.os }}-py311-${{ hashFiles('tools/libtorrent_build_manifest.json', 'tools/patch_libtorrent_no_piece_upload.py') }}
 
       - name: Install Python dependencies
@@ -47,6 +44,8 @@ jobs:
 
       - name: Build or restore patched libtorrent
         shell: pwsh
+        env:
+          PATCHED_LIBTORRENT_CACHE: ${{ runner.temp }}\patched-libtorrent-cache
         run: .\tools\build_patched_libtorrent.ps1 -Python python
 
       # Save immediately after a successful cold build so later packaging
@@ -55,7 +54,7 @@ jobs:
         if: steps.libtorrent-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: ${{ env.PATCHED_LIBTORRENT_CACHE }}
+          path: ${{ runner.temp }}\patched-libtorrent-cache
           key: ${{ steps.libtorrent-cache.outputs.cache-primary-key }}
 
       - name: Generate app icon
@@ -72,7 +71,7 @@ jobs:
       # collecting them; the final release is explicitly restored from this
       # verified staging copy afterwards.
       - name: Stage exact patched libtorrent binary
-        run: python tools/finalize_patched_libtorrent.py stage --stage-dir "${{ env.PATCHED_LIBTORRENT_STAGE }}"
+        run: python tools/finalize_patched_libtorrent.py stage --stage-dir "${{ runner.temp }}\patched-libtorrent-stage"
 
       - name: Build Windows app folder
         run: >-
@@ -100,14 +99,14 @@ jobs:
       - name: Restore and verify exact patched libtorrent in package
         run: >-
           python tools/finalize_patched_libtorrent.py finalize
-          --stage-dir "${{ env.PATCHED_LIBTORRENT_STAGE }}"
+          --stage-dir "${{ runner.temp }}\patched-libtorrent-stage"
           --dist-dir .\dist\DownloadOnlyTorrent
 
       - name: Add licenses and build provenance
         run: >-
           python tools/package_release_metadata.py
           --app-dir .\dist\DownloadOnlyTorrent
-          --cache-dir "${{ env.PATCHED_LIBTORRENT_CACHE }}"
+          --cache-dir "${{ runner.temp }}\patched-libtorrent-cache"
 
       - name: Smoke test
         shell: pwsh
