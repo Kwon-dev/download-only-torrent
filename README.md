@@ -145,7 +145,7 @@ The project uses third-party software under separate licenses, most notably:
 - Python under the Python Software Foundation license.
 - PyInstaller as the packaging tool under its license and executable-bundling exception.
 
-See `THIRD_PARTY_NOTICES.md`, `QT_LGPL_SOURCE_OFFER.md`, and `LICENSES/` in release packages for details. Release packages include the Qt/PySide6 LGPL/GPL texts obtained from the installed pinned PySide6 distribution, libtorrent notices and patch, Boost/OpenSSL notices, and the Python runtime license.
+See `THIRD_PARTY_NOTICES.md`, `QT_LGPL_SOURCE_OFFER.md`, and `LICENSES/` in release packages for details. Release packages include the Qt/PySide6 LGPL/GPL texts from deterministic pinned sources, libtorrent notices and patch, Boost/OpenSSL notices, and the Python runtime license.
 
 The onedir release format is intentional: Qt/PySide6 DLLs remain separate and may be replaced with compatible modified versions. Nothing in this project's license is intended to prohibit LGPL-permitted debugging, reverse engineering, relinking, or replacement of those libraries.
 
