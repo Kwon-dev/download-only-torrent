@@ -5,7 +5,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QLocale, QSettings
 
 
 @dataclass(slots=True)
@@ -25,11 +25,20 @@ class AppConfig:
     start_with_windows: bool = False
     theme: str = "dark"
     language: str = "en"
+    language_user_selected: bool = False
 
     @classmethod
     def load(cls) -> "AppConfig":
         settings = QSettings()
         default_download = str(Path.home() / "Downloads")
+        language_user_selected = _as_bool(
+            settings.value("general/language_user_selected", False)
+        )
+        if language_user_selected:
+            language = str(settings.value("general/language", "en"))
+        else:
+            language = "ko" if QLocale.system().name().lower().startswith("ko") else "en"
+
         return cls(
             download_dir=str(settings.value("general/download_dir", default_download)),
             download_limit_kib=int(settings.value("network/download_limit_kib", 0)),
@@ -39,13 +48,24 @@ class AppConfig:
             enable_lsd=_as_bool(settings.value("network/lsd", True)),
             enable_tcp=_as_bool(settings.value("network/tcp", True)),
             enable_utp=_as_bool(settings.value("network/utp", True)),
-            delete_torrent_source=_as_bool(settings.value("download/delete_torrent_source", True)),
-            auto_remove_completed=_as_bool(settings.value("download/auto_remove_completed", True)),
-            minimize_to_tray=_as_bool(settings.value("general/minimize_to_tray", True)),
-            notify_on_complete=_as_bool(settings.value("general/notify_on_complete", True)),
-            start_with_windows=_as_bool(settings.value("general/start_with_windows", False)),
+            delete_torrent_source=_as_bool(
+                settings.value("download/delete_torrent_source", True)
+            ),
+            auto_remove_completed=_as_bool(
+                settings.value("download/auto_remove_completed", True)
+            ),
+            minimize_to_tray=_as_bool(
+                settings.value("general/minimize_to_tray", True)
+            ),
+            notify_on_complete=_as_bool(
+                settings.value("general/notify_on_complete", True)
+            ),
+            start_with_windows=_as_bool(
+                settings.value("general/start_with_windows", False)
+            ),
             theme=str(settings.value("general/theme", "dark")),
-            language=str(settings.value("general/language", "en")),
+            language=language,
+            language_user_selected=language_user_selected,
         )
 
     def save(self) -> None:
@@ -58,13 +78,20 @@ class AppConfig:
         settings.setValue("network/lsd", self.enable_lsd)
         settings.setValue("network/tcp", self.enable_tcp)
         settings.setValue("network/utp", self.enable_utp)
-        settings.setValue("download/delete_torrent_source", self.delete_torrent_source)
-        settings.setValue("download/auto_remove_completed", self.auto_remove_completed)
+        settings.setValue(
+            "download/delete_torrent_source", self.delete_torrent_source
+        )
+        settings.setValue(
+            "download/auto_remove_completed", self.auto_remove_completed
+        )
         settings.setValue("general/minimize_to_tray", self.minimize_to_tray)
         settings.setValue("general/notify_on_complete", self.notify_on_complete)
         settings.setValue("general/start_with_windows", self.start_with_windows)
         settings.setValue("general/theme", self.theme)
         settings.setValue("general/language", self.language)
+        settings.setValue(
+            "general/language_user_selected", self.language_user_selected
+        )
         settings.sync()
         _set_windows_startup(self.start_with_windows)
 
@@ -89,9 +116,13 @@ def _set_windows_startup(enabled: bool) -> None:
         import winreg
 
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
+        ) as key:
             if enabled:
-                winreg.SetValueEx(key, "DownloadOnlyTorrent", 0, winreg.REG_SZ, _startup_command())
+                winreg.SetValueEx(
+                    key, "DownloadOnlyTorrent", 0, winreg.REG_SZ, _startup_command()
+                )
             else:
                 try:
                     winreg.DeleteValue(key, "DownloadOnlyTorrent")
