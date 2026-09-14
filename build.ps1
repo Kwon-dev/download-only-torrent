@@ -2,41 +2,37 @@ $ErrorActionPreference = 'Stop'
 
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-pip install pyinstaller pillow
+pip install pyinstaller pillow pefile setuptools wheel
+
+# Build libtorrent 2.1.1 from source with the PIECE payload send path removed.
+# This replaces any stock libtorrent module in the active Python environment.
+& .\tools\build_patched_libtorrent.ps1 -Python python
+
 python tools/generate_icon.py
 python -m compileall -q app.py download_only_torrent tools
+python tools/verify_patched_libtorrent.py
 
 pyinstaller --noconfirm --clean --onedir --windowed --name DownloadOnlyTorrent --icon assets/app.ico --collect-all libtorrent app.py
 
 $app = ".\dist\DownloadOnlyTorrent"
-$licenses = Join-Path $app "LICENSES"
-New-Item -ItemType Directory -Force -Path $licenses | Out-Null
-Copy-Item .\LICENSE (Join-Path $app "LICENSE")
-Copy-Item .\THIRD_PARTY_NOTICES.md (Join-Path $app "THIRD_PARTY_NOTICES.md")
-Copy-Item .\QT_LGPL_SOURCE_OFFER.md (Join-Path $app "QT_LGPL_SOURCE_OFFER.md")
-Copy-Item .\LICENSES\libtorrent.txt (Join-Path $licenses "libtorrent.txt")
-Invoke-WebRequest https://www.gnu.org/licenses/lgpl-3.0.txt -OutFile (Join-Path $licenses "LGPL-3.0.txt")
-Invoke-WebRequest https://www.gnu.org/licenses/gpl-3.0.txt -OutFile (Join-Path $licenses "GPL-3.0.txt")
+$workRoot = if ($env:RUNNER_TEMP) {
+    Join-Path $env:RUNNER_TEMP "download-only-torrent-deps"
+} else {
+    Join-Path (Resolve-Path .).Path ".build-deps"
+}
+$boostRoot = Join-Path $workRoot "boost"
+$libtorrentRoot = Join-Path $workRoot "libtorrent"
 
-@'
-from pathlib import Path
-import shutil
-import sys
+$vcpkgRoot = $env:VCPKG_ROOT
+if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) { $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT }
+if ([string]::IsNullOrWhiteSpace($vcpkgRoot) -and (Test-Path "C:\vcpkg\vcpkg.exe")) { $vcpkgRoot = "C:\vcpkg" }
+$opensslRoot = Join-Path $vcpkgRoot "installed\x64-windows-static-md"
 
-out = Path(r"dist\DownloadOnlyTorrent\LICENSES\Python-3.11.txt")
-candidates = [
-    Path(sys.base_prefix) / "LICENSE.txt",
-    Path(sys.base_prefix) / "LICENSE",
-    Path(sys.prefix) / "LICENSE.txt",
-    Path(sys.prefix) / "LICENSE",
-]
-for candidate in candidates:
-    if candidate.is_file():
-        shutil.copy2(candidate, out)
-        break
-else:
-    raise SystemExit("Python runtime license file not found")
-'@ | python -
+python tools/package_release_metadata.py `
+  --app-dir $app `
+  --boost-root $boostRoot `
+  --openssl-root $opensslRoot `
+  --libtorrent-source $libtorrentRoot
 
 Write-Host "Built: dist\DownloadOnlyTorrent\DownloadOnlyTorrent.exe"
 Write-Host "Keep the whole dist\DownloadOnlyTorrent folder together when distributing."
