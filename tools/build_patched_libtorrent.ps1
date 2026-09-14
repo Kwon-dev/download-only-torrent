@@ -19,7 +19,7 @@ $WorkRoot = (Resolve-Path $WorkRoot).Path
 
 $libtorrentDir = Join-Path $WorkRoot "libtorrent"
 $boostDir = Join-Path $WorkRoot "boost"
-$patchFile = Join-Path $repoRoot "patches\libtorrent-no-piece-upload.patch"
+$patcher = Join-Path $repoRoot "tools\patch_libtorrent_no_piece_upload.py"
 
 Write-Host "Dependency workspace: $WorkRoot"
 
@@ -31,34 +31,22 @@ if (Test-Path $libtorrentDir) {
 } else {
     git clone --depth=1 --branch v2.1.1 https://github.com/arvidn/libtorrent.git $libtorrentDir | Out-Host
 }
+if ($LASTEXITCODE -ne 0) { throw "libtorrent v2.1.1 checkout failed" }
 
-git -C $libtorrentDir apply --check $patchFile | Out-Host
-git -C $libtorrentDir apply $patchFile | Out-Host
+$actualRevision = (git -C $libtorrentDir rev-parse HEAD).Trim()
+$expectedRevision = "56ae8caba38bf154ffc210403cb23f91d0ecaa49"
+if ($actualRevision -ne $expectedRevision) {
+    throw "unexpected libtorrent v2.1.1 revision: $actualRevision"
+}
 
 $patchedSource = Join-Path $libtorrentDir "src\bt_peer_connection.cpp"
-$patchedText = Get-Content -Raw $patchedSource
-if ($patchedText -notmatch "DOWNLOAD_ONLY_TORRENT_PIECE_UPLOAD_DISABLED") {
-    throw "libtorrent hard-disable marker missing after patch"
-}
-
-# Validate that the patched write_piece body no longer contains the upstream
-# payload queueing primitives. This catches accidental patch drift before we
-# spend time compiling Boost/libtorrent.
-$start = $patchedText.IndexOf("void bt_peer_connection::write_piece")
-$end = $patchedText.IndexOf("// --------------------------", $start)
-if ($start -lt 0 -or $end -lt 0) {
-    throw "could not locate patched write_piece function"
-}
-$writePieceBody = $patchedText.Substring($start, $end - $start)
-foreach ($forbidden in @("append_send_buffer", "append_const_send_buffer", "m_payloads.emplace_back", "msg_piece")) {
-    if ($writePieceBody.Contains($forbidden)) {
-        throw "forbidden upload primitive '$forbidden' is still present in write_piece"
-    }
-}
+& $Python $patcher $patchedSource
+if ($LASTEXITCODE -ne 0) { throw "libtorrent source hardening failed" }
 
 if (-not (Test-Path $boostDir)) {
     git clone --depth=1 --recurse-submodules -j10 --branch boost-1.91.0 https://github.com/boostorg/boost.git $boostDir | Out-Host
 }
+if ($LASTEXITCODE -ne 0) { throw "Boost checkout failed" }
 
 if (-not (Test-Path (Join-Path $boostDir "b2.exe"))) {
     Push-Location $boostDir
