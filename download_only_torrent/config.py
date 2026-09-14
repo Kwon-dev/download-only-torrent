@@ -24,6 +24,7 @@ class AppConfig:
     notify_on_complete: bool = True
     start_with_windows: bool = False
     theme: str = "dark"
+    language: str = "en"
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -44,6 +45,7 @@ class AppConfig:
             notify_on_complete=_as_bool(settings.value("general/notify_on_complete", True)),
             start_with_windows=_as_bool(settings.value("general/start_with_windows", False)),
             theme=str(settings.value("general/theme", "dark")),
+            language=str(settings.value("general/language", "en")),
         )
 
     def save(self) -> None:
@@ -62,6 +64,7 @@ class AppConfig:
         settings.setValue("general/notify_on_complete", self.notify_on_complete)
         settings.setValue("general/start_with_windows", self.start_with_windows)
         settings.setValue("general/theme", self.theme)
+        settings.setValue("general/language", self.language)
         settings.sync()
         _set_windows_startup(self.start_with_windows)
 
