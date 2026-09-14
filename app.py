@@ -17,6 +17,13 @@ from download_only_torrent.runtime_fix import (
     refresh_discovery,
 )
 from download_only_torrent.ui import MainWindow, apply_theme
+from download_only_torrent.windows_integration import (
+    create_single_instance_server,
+    first_open_request,
+    forward_to_existing_instance,
+    register_windows_associations,
+    schedule_initial_open,
+)
 
 
 def _set_windows_app_id() -> None:
@@ -44,6 +51,14 @@ def main() -> int:
     app.setApplicationName("Download Only Torrent")
     app.setQuitOnLastWindowClosed(True)
 
+    open_request = first_open_request(sys.argv)
+    if forward_to_existing_instance(open_request):
+        return 0
+
+    # Keep the per-user shell registration pointed at the exact EXE currently
+    # being run. This is useful for portable/run-numbered CI builds too.
+    register_windows_associations()
+
     icon = make_app_icon()
     app.setWindowIcon(icon)
 
@@ -64,7 +79,12 @@ def main() -> int:
         pass
     install_debug_ui(window)
     install_controls_ui(window)
+
+    # Keep this object referenced by the window for the application's lifetime.
+    window._single_instance_server = create_single_instance_server(window)
+
     window.show()
+    schedule_initial_open(window, open_request)
     return app.exec()
 
 
