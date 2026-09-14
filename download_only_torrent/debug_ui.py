@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from PySide6.QtCore import QPoint, QTimer
 from PySide6.QtGui import QFontDatabase
@@ -69,7 +69,8 @@ def _fmt_duration(value) -> str:
         return str(value)
 
 
-def torrent_diagnostics(engine, task_id: str) -> str:
+def torrent_diagnostics(window, task_id: str) -> str:
+    engine = window.engine
     task = engine.tasks.get(task_id)
     if task is None:
         return "Torrent task no longer exists."
@@ -122,8 +123,7 @@ def torrent_diagnostics(engine, task_id: str) -> str:
         "progress",
         "current_tracker",
     ):
-        value = _status_value(status, key)
-        add(f"{key}: {value}")
+        add(f"{key}: {_status_value(status, key)}")
 
     next_announce = _status_value(status, "next_announce", None)
     if next_announce is not None:
@@ -140,6 +140,7 @@ def torrent_diagnostics(engine, task_id: str) -> str:
     settings = _safe(lambda: engine.session.get_settings(), {})
     if isinstance(settings, dict):
         for key in (
+            "listen_interfaces",
             "enable_dht",
             "enable_lsd",
             "enable_incoming_tcp",
@@ -170,6 +171,15 @@ def torrent_diagnostics(engine, task_id: str) -> str:
         add("(none)")
     add("")
 
+    add("[Recent libtorrent alerts]")
+    alerts = getattr(window, "_torrent_debug_alerts", [])
+    if alerts:
+        for item in alerts[-80:]:
+            add(item)
+    else:
+        add("(no alerts captured yet)")
+    add("")
+
     add("[Files]")
     for file in task.files:
         mark = "*" if file.index in task.selected_files else " "
@@ -185,20 +195,26 @@ class PropertiesDialog(QDialog):
         self.task_id = task_id
         lang = window.config.language
         self.setWindowTitle(_t(lang, "properties_title"))
-        self.resize(760, 640)
+        self.resize(820, 680)
 
         layout = QVBoxLayout(self)
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
         self.text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.text.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.text.setFont(
+            QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        )
         layout.addWidget(self.text, 1)
 
         row = QHBoxLayout()
         refresh = QPushButton(_t(lang, "refresh"))
         copy = QPushButton(_t(lang, "copy"))
         refresh.clicked.connect(self.refresh)
-        copy.clicked.connect(lambda: QApplication.clipboard().setText(self.text.toPlainText()))
+        copy.clicked.connect(
+            lambda: QApplication.clipboard().setText(
+                self.text.toPlainText()
+            )
+        )
         row.addWidget(refresh)
         row.addWidget(copy)
         row.addStretch()
@@ -215,11 +231,33 @@ class PropertiesDialog(QDialog):
         self.refresh()
 
     def refresh(self) -> None:
-        self.text.setPlainText(torrent_diagnostics(self.window.engine, self.task_id))
+        self.text.setPlainText(torrent_diagnostics(self.window, self.task_id))
 
 
 def install_debug_ui(window) -> None:
-    """Replace the task context menu with a compact diagnostic-aware menu."""
+    """Install compact context menu and continuously capture libtorrent alerts."""
+
+    window._torrent_debug_alerts = []
+
+    def collect_alerts() -> None:
+        try:
+            alerts = window.engine.session.pop_alerts()
+        except Exception:
+            return
+        for alert in alerts:
+            try:
+                message = alert.message()
+            except Exception:
+                message = str(alert)
+            stamp = datetime.now().strftime("%H:%M:%S")
+            window._torrent_debug_alerts.append(f"{stamp} {message}")
+        if len(window._torrent_debug_alerts) > 200:
+            del window._torrent_debug_alerts[:-200]
+
+    window._torrent_alert_timer = QTimer(window)
+    window._torrent_alert_timer.setInterval(500)
+    window._torrent_alert_timer.timeout.connect(collect_alerts)
+    window._torrent_alert_timer.start()
 
     try:
         window.table.customContextMenuRequested.disconnect()
@@ -235,8 +273,6 @@ def install_debug_ui(window) -> None:
         window.table.selectRow(row)
         lang = window.config.language
         menu = QMenu(window)
-        # Setting a stylesheet makes Qt draw the menu itself instead of keeping
-        # the wide native Windows icon/check gutter for icon-less actions.
         menu.setStyleSheet(
             "QMenu { padding: 3px; }"
             "QMenu::item { padding: 6px 16px 6px 10px; margin: 0px; }"
