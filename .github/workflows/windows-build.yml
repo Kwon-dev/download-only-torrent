@@ -35,9 +35,9 @@ jobs:
       - name: Syntax check
         run: python -m compileall -q app.py download_only_torrent tools
 
-      - name: Build EXE
+      - name: Build Windows app folder
         run: >-
-          pyinstaller --noconfirm --clean --onefile --windowed
+          pyinstaller --noconfirm --clean --onedir --windowed
           --name DownloadOnlyTorrent
           --icon assets/app.ico
           --collect-all libtorrent
@@ -48,7 +48,7 @@ jobs:
         run: |
           @'
           import pefile
-          pe = pefile.PE(r"dist\DownloadOnlyTorrent.exe")
+          pe = pefile.PE(r"dist\DownloadOnlyTorrent\DownloadOnlyTorrent.exe")
           resource_ids = {
               entry.id for entry in pe.DIRECTORY_ENTRY_RESOURCE.entries
               if entry.name is None
@@ -58,21 +58,57 @@ jobs:
           print("Embedded icon resources verified.")
           '@ | python -
 
+      - name: Add license and source-offer files
+        shell: pwsh
+        run: |
+          $app = ".\dist\DownloadOnlyTorrent"
+          $licenses = Join-Path $app "LICENSES"
+          New-Item -ItemType Directory -Force -Path $licenses | Out-Null
+          Copy-Item .\LICENSE (Join-Path $app "LICENSE")
+          Copy-Item .\THIRD_PARTY_NOTICES.md (Join-Path $app "THIRD_PARTY_NOTICES.md")
+          Copy-Item .\QT_LGPL_SOURCE_OFFER.md (Join-Path $app "QT_LGPL_SOURCE_OFFER.md")
+          Copy-Item .\LICENSES\libtorrent.txt (Join-Path $licenses "libtorrent.txt")
+          Invoke-WebRequest https://www.gnu.org/licenses/lgpl-3.0.txt -OutFile (Join-Path $licenses "LGPL-3.0.txt")
+          Invoke-WebRequest https://www.gnu.org/licenses/gpl-3.0.txt -OutFile (Join-Path $licenses "GPL-3.0.txt")
+          @'
+          from pathlib import Path
+          import shutil
+          import sys
+
+          out = Path(r"dist\DownloadOnlyTorrent\LICENSES\Python-3.11.txt")
+          candidates = [
+              Path(sys.base_prefix) / "LICENSE.txt",
+              Path(sys.base_prefix) / "LICENSE",
+              Path(sys.prefix) / "LICENSE.txt",
+              Path(sys.prefix) / "LICENSE",
+          ]
+          for candidate in candidates:
+              if candidate.is_file():
+                  shutil.copy2(candidate, out)
+                  print(f"Copied Python license from {candidate}")
+                  break
+          else:
+              raise SystemExit("Python runtime license file not found")
+          '@ | python -
+
       - name: Smoke test
         shell: pwsh
         run: |
-          $process = Start-Process -FilePath .\dist\DownloadOnlyTorrent.exe -ArgumentList '--version' -PassThru -Wait
+          $process = Start-Process -FilePath .\dist\DownloadOnlyTorrent\DownloadOnlyTorrent.exe -ArgumentList '--version' -PassThru -Wait
           if ($process.ExitCode -ne 0) { exit $process.ExitCode }
 
-      - name: Create cache-safe artifact filename
+      - name: Create release archive
         shell: pwsh
-        run: Copy-Item .\dist\DownloadOnlyTorrent.exe ".\dist\DownloadOnlyTorrent-r${{ github.run_number }}.exe"
+        run: |
+          $zip = ".\dist\DownloadOnlyTorrent-windows-x64-r${{ github.run_number }}.zip"
+          Compress-Archive -Path .\dist\DownloadOnlyTorrent\* -DestinationPath $zip -Force
+          Write-Host "Built: $zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: DownloadOnlyTorrent-windows-x64-r${{ github.run_number }}
-          path: dist/DownloadOnlyTorrent-r${{ github.run_number }}.exe
+          path: dist/DownloadOnlyTorrent-windows-x64-r${{ github.run_number }}.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -80,4 +116,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/DownloadOnlyTorrent.exe
+          files: dist/DownloadOnlyTorrent-windows-x64-r${{ github.run_number }}.zip
