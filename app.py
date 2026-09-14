@@ -12,6 +12,8 @@ from download_only_torrent.config import AppConfig
 from download_only_torrent.controls_ui import install_controls_ui
 from download_only_torrent.debug_ui import install_debug_ui
 from download_only_torrent.engine import TorrentEngine
+from download_only_torrent.network_ui import install_network_ui
+from download_only_torrent.port_config import install_engine_listen_port
 from download_only_torrent.runtime_fix import (
     apply_runtime_network_fix,
     refresh_discovery,
@@ -62,13 +64,17 @@ def main() -> int:
     icon = make_app_icon()
     app.setWindowIcon(icon)
 
+    # Ensure the initial libtorrent session is created on the persisted free
+    # port instead of briefly attempting libtorrent's default 6881 port.
+    install_engine_listen_port(TorrentEngine)
+
     config = AppConfig.load()
     apply_theme(app, config.theme)
     engine = TorrentEngine(config)
     apply_runtime_network_fix(engine)
 
-    # Re-announce once more after libtorrent has had time to create its new
-    # OS-selected listen socket.
+    # Re-announce once more after libtorrent has had time to create its listen
+    # socket on the selected port.
     QTimer.singleShot(1000, lambda: refresh_discovery(engine))
 
     window = MainWindow(engine, config)
@@ -77,6 +83,10 @@ def main() -> int:
         window.tray.setIcon(icon)
     except Exception:
         pass
+
+    # Install extensions before controls so Ctrl+O points at the multi-file
+    # torrent picker rather than the original single-file action.
+    install_network_ui(window)
     install_debug_ui(window)
     install_controls_ui(window)
 
