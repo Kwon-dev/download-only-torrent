@@ -8,7 +8,7 @@ This project uses the Community Edition of Qt for Python (PySide6), which is ava
 
 The Windows release is intentionally packaged as an **onedir** application rather than a single-file bundle. Qt/PySide6 DLLs remain separate from `DownloadOnlyTorrent.exe`, so recipients can replace compatible Qt libraries with modified versions as contemplated by the LGPL.
 
-The binary distribution includes the LGPLv3 and GPLv3 license texts shipped with the exact pinned PySide6 distribution used to build the release. The build copies these texts from the installed package instead of downloading them from a network server during CI. See `QT_LGPL_SOURCE_OFFER.md` for source-code offer and relinking information.
+The binary distribution includes the LGPLv3 and GPLv3 license texts. The build uses vendored copies when present; if a required text is not vendored, it retrieves that file from the exact PySide6 6.9.2 source commit pinned in `tools/package_release_metadata.py` and verifies its Git blob ID before packaging. This avoids relying on the installed wheel's internal file layout. See `QT_LGPL_SOURCE_OFFER.md` for source-code offer and relinking information.
 
 Official Qt for Python licensing information:
 - https://doc.qt.io/qtforpython-6/
