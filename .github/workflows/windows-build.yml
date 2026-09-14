@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,11 +23,39 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: Install dependencies
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      # Cache only the reusable build outputs. The key intentionally excludes
+      # CI/build orchestration scripts: only the declared binary inputs and the
+      # actual libtorrent source transformation invalidate this wheel cache.
+      - name: Restore patched libtorrent wheel cache
+        id: libtorrent-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}\patched-libtorrent-cache
+          key: patched-libtorrent-${{ runner.os }}-py311-${{ hashFiles('tools/libtorrent_build_manifest.json', 'tools/patch_libtorrent_no_piece_upload.py') }}
+
+      - name: Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
           pip install pyinstaller pillow pefile
+
+      - name: Build or restore patched libtorrent
+        shell: pwsh
+        env:
+          PATCHED_LIBTORRENT_CACHE: ${{ runner.temp }}\patched-libtorrent-cache
+        run: .\tools\build_patched_libtorrent.ps1 -Python python
+
+      # Save immediately after a successful cold build so later packaging
+      # failures never waste the expensive libtorrent compilation.
+      - name: Save patched libtorrent wheel cache
+        if: steps.libtorrent-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}\patched-libtorrent-cache
+          key: ${{ steps.libtorrent-cache.outputs.cache-primary-key }}
 
       - name: Generate app icon
         run: python tools/generate_icon.py
@@ -35,9 +63,19 @@ jobs:
       - name: Syntax check
         run: python -m compileall -q app.py download_only_torrent tools
 
+      - name: Verify patched libtorrent before packaging
+        run: python tools/verify_patched_libtorrent.py
+
+      # Preserve the exact verified extension module outside PyInstaller's work
+      # tree. PyInstaller is allowed to process extension binaries while
+      # collecting them; the final release is explicitly restored from this
+      # verified staging copy afterwards.
+      - name: Stage exact patched libtorrent binary
+        run: python tools/finalize_patched_libtorrent.py stage --stage-dir "${{ runner.temp }}\patched-libtorrent-stage"
+
       - name: Build Windows app folder
         run: >-
-          pyinstaller --noconfirm --clean --onedir --windowed
+          pyinstaller --noconfirm --clean --onedir --windowed --noupx
           --name DownloadOnlyTorrent
           --icon assets/app.ico
           --collect-all libtorrent
@@ -58,38 +96,17 @@ jobs:
           print("Embedded icon resources verified.")
           '@ | python -
 
-      - name: Add license and source-offer files
-        shell: pwsh
-        run: |
-          $app = ".\dist\DownloadOnlyTorrent"
-          $licenses = Join-Path $app "LICENSES"
-          New-Item -ItemType Directory -Force -Path $licenses | Out-Null
-          Copy-Item .\LICENSE (Join-Path $app "LICENSE")
-          Copy-Item .\THIRD_PARTY_NOTICES.md (Join-Path $app "THIRD_PARTY_NOTICES.md")
-          Copy-Item .\QT_LGPL_SOURCE_OFFER.md (Join-Path $app "QT_LGPL_SOURCE_OFFER.md")
-          Copy-Item .\LICENSES\libtorrent.txt (Join-Path $licenses "libtorrent.txt")
-          Invoke-WebRequest https://www.gnu.org/licenses/lgpl-3.0.txt -OutFile (Join-Path $licenses "LGPL-3.0.txt")
-          Invoke-WebRequest https://www.gnu.org/licenses/gpl-3.0.txt -OutFile (Join-Path $licenses "GPL-3.0.txt")
-          @'
-          from pathlib import Path
-          import shutil
-          import sys
+      - name: Restore and verify exact patched libtorrent in package
+        run: >-
+          python tools/finalize_patched_libtorrent.py finalize
+          --stage-dir "${{ runner.temp }}\patched-libtorrent-stage"
+          --dist-dir .\dist\DownloadOnlyTorrent
 
-          out = Path(r"dist\DownloadOnlyTorrent\LICENSES\Python-3.11.txt")
-          candidates = [
-              Path(sys.base_prefix) / "LICENSE.txt",
-              Path(sys.base_prefix) / "LICENSE",
-              Path(sys.prefix) / "LICENSE.txt",
-              Path(sys.prefix) / "LICENSE",
-          ]
-          for candidate in candidates:
-              if candidate.is_file():
-                  shutil.copy2(candidate, out)
-                  print(f"Copied Python license from {candidate}")
-                  break
-          else:
-              raise SystemExit("Python runtime license file not found")
-          '@ | python -
+      - name: Add licenses and build provenance
+        run: >-
+          python tools/package_release_metadata.py
+          --app-dir .\dist\DownloadOnlyTorrent
+          --cache-dir "${{ runner.temp }}\patched-libtorrent-cache"
 
       - name: Smoke test
         shell: pwsh

@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "cache_revision": 1,
+  "runner": "windows-2022",
+  "python": "3.11",
+  "libtorrent": {
+    "version": "2.1.1",
+    "tag": "v2.1.1",
+    "commit": "56ae8caba38bf154ffc210403cb23f91d0ecaa49"
+  },
+  "boost": {
+    "version": "1.91.0",
+    "tag": "boost-1.91.0"
+  },
+  "vcpkg": {
+    "triplet": "x64-windows-static-md",
+    "ports": ["openssl"]
+  },
+  "b2_args": [
+    "release",
+    "address-model=64",
+    "libtorrent-link=static",
+    "boost-link=static",
+    "runtime-link=shared",
+    "cxxstd=17",
+    "crypto=openssl",
+    "webtorrent=off"
+  ]
+}

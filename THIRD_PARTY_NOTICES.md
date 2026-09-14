@@ -8,21 +8,37 @@ This project uses the Community Edition of Qt for Python (PySide6), which is ava
 
 The Windows release is intentionally packaged as an **onedir** application rather than a single-file bundle. Qt/PySide6 DLLs remain separate from `DownloadOnlyTorrent.exe`, so recipients can replace compatible Qt libraries with modified versions as contemplated by the LGPL.
 
-The binary distribution includes copies of the GNU LGPLv3 and GPLv3 license texts. See `QT_LGPL_SOURCE_OFFER.md` for the source-code offer and relinking information.
+The binary distribution includes the LGPLv3 and GPLv3 license texts. The build uses vendored copies when present; if a required text is not vendored, it retrieves that file from the exact PySide6 6.9.2 source commit pinned in `tools/package_release_metadata.py` and verifies its Git blob ID before packaging. This avoids relying on the installed wheel's internal file layout. See `QT_LGPL_SOURCE_OFFER.md` for source-code offer and relinking information.
 
 Official Qt for Python licensing information:
 - https://doc.qt.io/qtforpython-6/
 - https://www.qt.io/development/open-source-lgpl-obligations
 
-## libtorrent 2.1.1
+## Modified libtorrent 2.1.1
 
-This project uses libtorrent. libtorrent is released under the BSD license and includes additional third-party notices in its upstream license file.
+This project builds libtorrent from the upstream `v2.1.1` source revision and applies `patches/libtorrent-no-piece-upload.patch` before compiling the Python binding.
 
-A copy of the libtorrent license and bundled notices is included at `LICENSES/libtorrent.txt`.
+The modification removes the normal BitTorrent PIECE payload queueing implementation from `bt_peer_connection::write_piece()`. If that path is entered, the patched implementation records a compile-time marker and disconnects the peer rather than queueing file-piece bytes. The release package includes the exact patch and `PATCHED_LIBTORRENT_BUILD.txt` with build provenance and SHA-256 hashes.
+
+libtorrent is released under the BSD license and includes additional third-party notices in its upstream license file. A copy of the exact upstream license/notices is included at `LICENSES/libtorrent.txt`.
 
 Upstream project:
 - https://libtorrent.org/
 - https://github.com/arvidn/libtorrent
+
+## Boost 1.91.0
+
+The custom libtorrent Python binding is built with Boost 1.91.0. Boost is distributed under the Boost Software License 1.0. The Windows release includes a copy at `LICENSES/Boost-1.0.txt`.
+
+Upstream project:
+- https://www.boost.org/
+
+## OpenSSL
+
+The custom libtorrent build uses OpenSSL supplied by vcpkg for HTTPS tracker / SSL support. The release package includes the license/copyright material from the exact vcpkg OpenSSL package used by the build at `LICENSES/OpenSSL.txt`.
+
+Upstream project:
+- https://www.openssl.org/
 
 ## Python 3.11
 
