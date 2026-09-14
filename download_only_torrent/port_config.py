@@ -75,3 +75,25 @@ def save_listen_port(port: int) -> int:
 def listen_interfaces(port: int) -> str:
     port = max(1, min(65535, int(port)))
     return f"0.0.0.0:{port},[::]:{port}"
+
+
+def install_engine_listen_port(engine_class) -> None:
+    """Inject the persisted port into session settings before lt.session exists.
+
+    This prevents libtorrent from briefly trying its own default 6881 port before
+    the runtime networking configuration is applied.
+    """
+
+    if getattr(engine_class, "_listen_port_patched", False):
+        return
+    original = engine_class._session_settings
+
+    def patched(self):
+        settings = original(self)
+        port = ensure_listen_port()
+        settings["listen_interfaces"] = listen_interfaces(port)
+        settings["listen_system_port_fallback"] = False
+        return settings
+
+    engine_class._session_settings = patched
+    engine_class._listen_port_patched = True
