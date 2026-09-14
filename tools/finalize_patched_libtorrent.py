@@ -30,7 +30,11 @@ def stage(stage_dir: Path) -> None:
 
 
 def finalize(stage_dir: Path, dist_dir: Path) -> None:
-    staged = find_libtorrent_binaries(stage_dir)
+    # The wheel packages the extension as libtorrent/__init__.<abi>.pyd, so once
+    # staged outside the package directory its filename no longer contains the
+    # word "libtorrent". The staging directory is dedicated to this exact
+    # verified module, therefore select its single top-level .pyd directly.
+    staged = sorted(path.resolve() for path in stage_dir.glob("*.pyd") if path.is_file())
     if len(staged) != 1:
         raise RuntimeError(
             f"expected exactly one staged libtorrent .pyd, found {len(staged)}: {staged}"
