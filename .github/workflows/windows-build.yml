@@ -12,7 +12,9 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Match libtorrent's own Windows Python-binding CI toolchain rather than
+    # floating windows-latest to a newer Visual Studio image unexpectedly.
+    runs-on: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,17 +25,27 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: Install dependencies
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
           pip install pyinstaller pillow pefile
+
+      - name: Build patched libtorrent
+        shell: pwsh
+        run: .\tools\build_patched_libtorrent.ps1 -Python python
 
       - name: Generate app icon
         run: python tools/generate_icon.py
 
       - name: Syntax check
         run: python -m compileall -q app.py download_only_torrent tools
+
+      - name: Verify patched libtorrent before packaging
+        run: python tools/verify_patched_libtorrent.py
 
       - name: Build Windows app folder
         run: >-
@@ -58,38 +70,32 @@ jobs:
           print("Embedded icon resources verified.")
           '@ | python -
 
-      - name: Add license and source-offer files
+      - name: Verify packaged libtorrent is hard-disabled build
         shell: pwsh
         run: |
-          $app = ".\dist\DownloadOnlyTorrent"
-          $licenses = Join-Path $app "LICENSES"
-          New-Item -ItemType Directory -Force -Path $licenses | Out-Null
-          Copy-Item .\LICENSE (Join-Path $app "LICENSE")
-          Copy-Item .\THIRD_PARTY_NOTICES.md (Join-Path $app "THIRD_PARTY_NOTICES.md")
-          Copy-Item .\QT_LGPL_SOURCE_OFFER.md (Join-Path $app "QT_LGPL_SOURCE_OFFER.md")
-          Copy-Item .\LICENSES\libtorrent.txt (Join-Path $licenses "libtorrent.txt")
-          Invoke-WebRequest https://www.gnu.org/licenses/lgpl-3.0.txt -OutFile (Join-Path $licenses "LGPL-3.0.txt")
-          Invoke-WebRequest https://www.gnu.org/licenses/gpl-3.0.txt -OutFile (Join-Path $licenses "GPL-3.0.txt")
           @'
           from pathlib import Path
-          import shutil
-          import sys
-
-          out = Path(r"dist\DownloadOnlyTorrent\LICENSES\Python-3.11.txt")
-          candidates = [
-              Path(sys.base_prefix) / "LICENSE.txt",
-              Path(sys.base_prefix) / "LICENSE",
-              Path(sys.prefix) / "LICENSE.txt",
-              Path(sys.prefix) / "LICENSE",
-          ]
-          for candidate in candidates:
-              if candidate.is_file():
-                  shutil.copy2(candidate, out)
-                  print(f"Copied Python license from {candidate}")
-                  break
-          else:
-              raise SystemExit("Python runtime license file not found")
+          marker = b"DOWNLOAD_ONLY_TORRENT_PIECE_UPLOAD_DISABLED"
+          modules = list(Path(r"dist\DownloadOnlyTorrent").rglob("libtorrent*.pyd"))
+          assert modules, "packaged libtorrent .pyd not found"
+          assert any(marker in p.read_bytes() for p in modules), (
+              "packaged libtorrent does not contain the compile-time hard-disable marker"
+          )
+          print("Packaged patched libtorrent verified:", modules)
           '@ | python -
+
+      - name: Add licenses and build provenance
+        shell: pwsh
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP "download-only-torrent-deps"
+          $vcpkgRoot = $env:VCPKG_ROOT
+          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) { $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT }
+          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) { $vcpkgRoot = "C:\vcpkg" }
+          python tools/package_release_metadata.py `
+            --app-dir .\dist\DownloadOnlyTorrent `
+            --boost-root (Join-Path $work "boost") `
+            --openssl-root (Join-Path $vcpkgRoot "installed\x64-windows-static-md") `
+            --libtorrent-source (Join-Path $work "libtorrent")
 
       - name: Smoke test
         shell: pwsh
