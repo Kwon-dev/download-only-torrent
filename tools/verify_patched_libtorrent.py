@@ -33,11 +33,19 @@ def find_libtorrent_binaries(root: Path) -> list[Path]:
     root = root.resolve()
     if not root.is_dir():
         return []
-    return sorted(
-        path.resolve()
-        for path in root.rglob("*.pyd")
-        if "libtorrent" in path.name.lower()
-    )
+
+    root_is_libtorrent_package = root.name.lower() == "libtorrent"
+    matches: list[Path] = []
+    for path in root.rglob("*.pyd"):
+        relative = path.relative_to(root)
+        parent_parts = {part.lower() for part in relative.parts[:-1]}
+        if (
+            root_is_libtorrent_package
+            or "libtorrent" in path.name.lower()
+            or "libtorrent" in parent_parts
+        ):
+            matches.append(path.resolve())
+    return sorted(matches)
 
 
 def find_installed_libtorrent_binary() -> Path:
