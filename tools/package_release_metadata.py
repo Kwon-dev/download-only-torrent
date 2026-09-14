@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.metadata
 import shutil
-import site
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from verify_patched_libtorrent import find_libtorrent_binaries, verify_binary
 
 
 QT_LICENSES = ("LGPL-3.0-only.txt", "GPL-3.0-only.txt")
+PYSIDE_SOURCE_COMMIT = "d5c8535130fafc65d868753f5cf72b6b9b10d628"
+PYSIDE_LICENSE_BLOBS = {
+    "LGPL-3.0-only.txt": "65c5ca88a67c30becee01c5a8816d964b03862f9",
+    "GPL-3.0-only.txt": "94a9ed024d3859793618152ea559a168bbcbb5e2",
+}
 PATCH_MARKER = b"DOWNLOAD_ONLY_TORRENT_PIECE_UPLOAD_DISABLED"
 LIBTORRENT_TAG = "v2.1.1"
 LIBTORRENT_COMMIT = "56ae8caba38bf154ffc210403cb23f91d0ecaa49"
@@ -25,6 +30,11 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def git_blob_sha1(data: bytes) -> str:
+    header = f"blob {len(data)}\0".encode("ascii")
+    return hashlib.sha1(header + data).hexdigest()
+
+
 def copy(src: Path, dst: Path) -> None:
     if not src.is_file():
         raise FileNotFoundError(src)
@@ -33,39 +43,50 @@ def copy(src: Path, dst: Path) -> None:
     print(f"Copied {src} -> {dst}")
 
 
-def find_distribution_license(filename: str) -> Path:
-    for dist_name in ("PySide6", "PySide6_Essentials", "PySide6_Addons", "shiboken6"):
-        try:
-            dist = importlib.metadata.distribution(dist_name)
-        except importlib.metadata.PackageNotFoundError:
-            continue
-        for entry in dist.files or ():
-            if Path(str(entry)).name != filename:
-                continue
-            candidate = Path(dist.locate_file(entry)).resolve()
-            if candidate.is_file():
-                return candidate
+def materialize_qt_license(repo_root: Path, filename: str, dst: Path) -> None:
+    vendored = repo_root / "LICENSES" / filename
+    if vendored.is_file():
+        copy(vendored, dst)
+        return
 
-    roots: set[Path] = set()
-    for value in site.getsitepackages():
-        roots.add(Path(value))
-    try:
-        roots.add(Path(site.getusersitepackages()))
-    except Exception:
-        pass
-    for root in roots:
-        if not root.is_dir():
-            continue
-        patterns = (
-            f"PySide6*/**/{filename}",
-            f"shiboken6*/**/{filename}",
-            f"PySide6/**/{filename}",
+    expected_blob = PYSIDE_LICENSE_BLOBS[filename]
+    url = (
+        "https://raw.githubusercontent.com/pyside/pyside-setup/"
+        f"{PYSIDE_SOURCE_COMMIT}/LICENSES/{filename}"
+    )
+    last_error: Exception | None = None
+    data: bytes | None = None
+    for attempt in range(1, 4):
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "download-only-torrent-release-builder"},
+            )
+            with urllib.request.urlopen(request, timeout=20) as response:
+                data = response.read()
+            break
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = exc
+            print(f"Qt license fetch attempt {attempt}/3 failed for {filename}: {exc}")
+
+    if data is None:
+        raise RuntimeError(
+            f"could not fetch pinned PySide6 license {filename} from {url}: {last_error}"
         )
-        for pattern in patterns:
-            for candidate in root.glob(pattern):
-                if candidate.is_file():
-                    return candidate.resolve()
-    raise FileNotFoundError(f"could not find installed Qt/PySide6 license: {filename}")
+
+    actual_blob = git_blob_sha1(data)
+    if actual_blob != expected_blob:
+        raise RuntimeError(
+            f"pinned PySide6 license blob mismatch for {filename}: "
+            f"expected {expected_blob}, got {actual_blob}"
+        )
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(data)
+    print(
+        f"Fetched pinned PySide6 license {filename} from commit "
+        f"{PYSIDE_SOURCE_COMMIT}; verified blob {actual_blob}"
+    )
 
 
 def find_python_license() -> Path:
@@ -103,7 +124,7 @@ def main() -> int:
     copy(repo_root / "LICENSES" / "libtorrent.txt", licenses / "libtorrent.txt")
 
     for name in QT_LICENSES:
-        copy(find_distribution_license(name), licenses / name)
+        materialize_qt_license(repo_root, name, licenses / name)
     copy(find_python_license(), licenses / "Python-3.11.txt")
     copy(cache_dir / "licenses" / "Boost-1.0.txt", licenses / "Boost-1.0.txt")
     copy(cache_dir / "licenses" / "OpenSSL.txt", licenses / "OpenSSL.txt")
