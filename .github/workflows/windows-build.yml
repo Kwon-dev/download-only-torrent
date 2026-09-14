@@ -27,15 +27,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
+          pip install pyinstaller pillow
+
+      - name: Generate app icon
+        run: python tools/generate_icon.py
 
       - name: Syntax check
-        run: python -m compileall -q app.py download_only_torrent
+        run: python -m compileall -q app.py download_only_torrent tools
 
       - name: Build EXE
         run: >-
           pyinstaller --noconfirm --clean --onefile --windowed
           --name DownloadOnlyTorrent
+          --icon assets/app.ico
           --collect-all libtorrent
           app.py
 
