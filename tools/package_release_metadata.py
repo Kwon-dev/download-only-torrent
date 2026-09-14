@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
-import importlib.util
 import shutil
 import site
 import sys
 from pathlib import Path
+
+from verify_patched_libtorrent import find_libtorrent_binaries, verify_binary
 
 
 QT_LICENSES = ("LGPL-3.0-only.txt", "GPL-3.0-only.txt")
@@ -33,9 +34,6 @@ def copy(src: Path, dst: Path) -> None:
 
 
 def find_distribution_license(filename: str) -> Path:
-    # Qt for Python wheels include their license files. Prefer files belonging
-    # to the exact PySide6/shiboken distributions installed for this build so
-    # release packaging does not depend on an external license web server.
     for dist_name in ("PySide6", "PySide6_Essentials", "PySide6_Addons", "shiboken6"):
         try:
             dist = importlib.metadata.distribution(dist_name)
@@ -83,28 +81,15 @@ def find_python_license() -> Path:
     raise FileNotFoundError("Python runtime license file not found")
 
 
-def find_libtorrent_binary() -> Path:
-    spec = importlib.util.find_spec("libtorrent")
-    if spec is None or not spec.origin:
-        raise FileNotFoundError("libtorrent module is not installed")
-    path = Path(spec.origin).resolve()
-    if not path.is_file():
-        raise FileNotFoundError(path)
-    if PATCH_MARKER not in path.read_bytes():
-        raise RuntimeError("installed libtorrent is not the hard-disabled patched build")
-    return path
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--app-dir", required=True)
+    parser.add_argument("--cache-dir", required=True)
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[1]))
-    parser.add_argument("--boost-root")
-    parser.add_argument("--openssl-root")
-    parser.add_argument("--libtorrent-source")
     args = parser.parse_args()
 
     app_dir = Path(args.app_dir).resolve()
+    cache_dir = Path(args.cache_dir).resolve()
     repo_root = Path(args.repo_root).resolve()
     licenses = app_dir / "LICENSES"
     licenses.mkdir(parents=True, exist_ok=True)
@@ -115,37 +100,25 @@ def main() -> int:
 
     patcher = repo_root / "tools" / "patch_libtorrent_no_piece_upload.py"
     copy(patcher, licenses / "libtorrent-no-piece-upload-patcher.py")
-
-    libtorrent_license = repo_root / "LICENSES" / "libtorrent.txt"
-    if args.libtorrent_source:
-        upstream_license = Path(args.libtorrent_source).resolve() / "LICENSE"
-        if upstream_license.is_file():
-            libtorrent_license = upstream_license
-    copy(libtorrent_license, licenses / "libtorrent.txt")
+    copy(repo_root / "LICENSES" / "libtorrent.txt", licenses / "libtorrent.txt")
 
     for name in QT_LICENSES:
         copy(find_distribution_license(name), licenses / name)
-
     copy(find_python_license(), licenses / "Python-3.11.txt")
+    copy(cache_dir / "licenses" / "Boost-1.0.txt", licenses / "Boost-1.0.txt")
+    copy(cache_dir / "licenses" / "OpenSSL.txt", licenses / "OpenSSL.txt")
 
-    if args.boost_root:
-        copy(Path(args.boost_root).resolve() / "LICENSE_1_0.txt", licenses / "Boost-1.0.txt")
+    modules = find_libtorrent_binaries(app_dir)
+    if not modules:
+        raise FileNotFoundError(f"packaged libtorrent module not found under {app_dir}")
 
-    if args.openssl_root:
-        openssl_root = Path(args.openssl_root).resolve()
-        candidates = [
-            openssl_root / "share" / "openssl" / "copyright",
-            openssl_root / "LICENSE.txt",
-            openssl_root / "LICENSE",
-        ]
-        for candidate in candidates:
-            if candidate.is_file():
-                copy(candidate, licenses / "OpenSSL.txt")
-                break
-        else:
-            raise FileNotFoundError(f"OpenSSL license not found under {openssl_root}")
+    module_hashes: list[tuple[Path, str]] = []
+    for module in modules:
+        module_hashes.append((module, verify_binary(module)))
+    unique_hashes = {digest for _, digest in module_hashes}
+    if len(unique_hashes) != 1:
+        raise RuntimeError("packaged libtorrent candidates are not byte-for-byte identical")
 
-    module = find_libtorrent_binary()
     exe = app_dir / "DownloadOnlyTorrent.exe"
     lines = [
         "Download Only Torrent - patched libtorrent build provenance",
@@ -156,10 +129,12 @@ def main() -> int:
         "source transformation: tools/patch_libtorrent_no_piece_upload.py",
         "policy: BitTorrent PIECE payload queueing code removed; attempted entry disconnects the peer",
         f"compiled marker: {PATCH_MARKER.decode('ascii')}",
-        f"libtorrent module: {module.name}",
-        f"libtorrent module SHA-256: {sha256(module)}",
         f"source patcher SHA-256: {sha256(patcher)}",
     ]
+    for module, digest in module_hashes:
+        relative = module.relative_to(app_dir)
+        lines.append(f"packaged libtorrent module: {relative}")
+        lines.append(f"packaged libtorrent module SHA-256: {digest}")
     if exe.is_file():
         lines.append(f"DownloadOnlyTorrent.exe SHA-256: {sha256(exe)}")
     (app_dir / "PATCHED_LIBTORRENT_BUILD.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")

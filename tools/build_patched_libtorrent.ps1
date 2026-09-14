@@ -7,6 +7,16 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$manifestPath = Join-Path $repoRoot "tools\libtorrent_build_manifest.json"
+$manifest = Get-Content -Raw -Path $manifestPath | ConvertFrom-Json
+
+$libtorrentVersion = [string]$manifest.libtorrent.version
+$libtorrentTag = [string]$manifest.libtorrent.tag
+$expectedRevision = [string]$manifest.libtorrent.commit
+$boostTag = [string]$manifest.boost.tag
+$triplet = [string]$manifest.vcpkg.triplet
+$b2BaseArgs = (@($manifest.b2_args) -join " ")
+
 if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
     if ($env:RUNNER_TEMP) {
         $WorkRoot = Join-Path $env:RUNNER_TEMP "download-only-torrent-deps"
@@ -17,24 +27,32 @@ if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
 New-Item -ItemType Directory -Force -Path $WorkRoot | Out-Null
 $WorkRoot = (Resolve-Path $WorkRoot).Path
 
+$cacheDir = $env:PATCHED_LIBTORRENT_CACHE
+if ([string]::IsNullOrWhiteSpace($cacheDir)) {
+    $cacheDir = Join-Path $WorkRoot "artifact-cache"
+}
+New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+$cacheDir = (Resolve-Path $cacheDir).Path
+$licenseCacheDir = Join-Path $cacheDir "licenses"
+
 $libtorrentDir = Join-Path $WorkRoot "libtorrent"
 $boostDir = Join-Path $WorkRoot "boost"
-$wheelCacheDir = Join-Path $WorkRoot "wheel-cache"
 $patcher = Join-Path $repoRoot "tools\patch_libtorrent_no_piece_upload.py"
+$wheelPattern = "libtorrent-$libtorrentVersion-*.whl"
 
 Write-Host "Dependency workspace: $WorkRoot"
+Write-Host "Patched libtorrent artifact cache: $cacheDir"
 
-# GitHub Actions caches the dependency workspace. If a wheel produced by the
-# exact cache key is available, install and verify it instead of rebuilding
-# libtorrent/Boost from source. The workflow cache key includes this script and
-# the source patcher, so any hardening/build change automatically invalidates it.
-$cachedWheel = $null
-if (Test-Path $wheelCacheDir) {
-    $cachedWheel = Get-ChildItem -Path $wheelCacheDir -Filter "libtorrent-2.1.1-*.whl" |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-}
-if ($cachedWheel) {
+$cachedWheel = Get-ChildItem -Path $cacheDir -Filter $wheelPattern -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+$cachedBoostLicense = Join-Path $licenseCacheDir "Boost-1.0.txt"
+$cachedOpenSslLicense = Join-Path $licenseCacheDir "OpenSSL.txt"
+$cacheComplete = $null -ne $cachedWheel -and
+    (Test-Path $cachedBoostLicense) -and
+    (Test-Path $cachedOpenSslLicense)
+
+if ($cacheComplete) {
     Write-Host "Using cached patched libtorrent wheel: $($cachedWheel.FullName)"
     & $Python -m pip install --force-reinstall --no-deps $cachedWheel.FullName
     if ($LASTEXITCODE -ne 0) { throw "cached patched libtorrent wheel installation failed" }
@@ -42,30 +60,29 @@ if ($cachedWheel) {
     & $Python (Join-Path $repoRoot "tools\verify_patched_libtorrent.py")
     if ($LASTEXITCODE -ne 0) { throw "cached patched libtorrent verification failed" }
 
-    Write-Host "Cached patched libtorrent v2.1.1 is installed and verified."
+    Write-Host "Cached patched libtorrent $libtorrentVersion is installed and verified; source build skipped."
     exit 0
+}
+
+if ($cachedWheel) {
+    Write-Warning "Patched wheel cache is incomplete (license bundle missing); rebuilding instead of trusting a partial cache."
 }
 
 if (Test-Path $libtorrentDir) {
     git -C $libtorrentDir reset --hard | Out-Host
     git -C $libtorrentDir clean -xfd | Out-Host
-    git -C $libtorrentDir fetch --depth=1 origin tag v2.1.1 --force | Out-Host
-    git -C $libtorrentDir checkout --force v2.1.1 | Out-Host
+    git -C $libtorrentDir fetch --depth=1 origin tag $libtorrentTag --force | Out-Host
+    git -C $libtorrentDir checkout --force $libtorrentTag | Out-Host
 } else {
-    git clone --depth=1 --branch v2.1.1 https://github.com/arvidn/libtorrent.git $libtorrentDir | Out-Host
+    git clone --depth=1 --branch $libtorrentTag https://github.com/arvidn/libtorrent.git $libtorrentDir | Out-Host
 }
-if ($LASTEXITCODE -ne 0) { throw "libtorrent v2.1.1 checkout failed" }
+if ($LASTEXITCODE -ne 0) { throw "libtorrent $libtorrentTag checkout failed" }
 
 $actualRevision = (git -C $libtorrentDir rev-parse HEAD).Trim()
-$expectedRevision = "56ae8caba38bf154ffc210403cb23f91d0ecaa49"
 if ($actualRevision -ne $expectedRevision) {
-    throw "unexpected libtorrent v2.1.1 revision: $actualRevision"
+    throw "unexpected libtorrent $libtorrentTag revision: $actualRevision"
 }
 
-# libtorrent's root Jamfile unconditionally loads the try_signal and
-# libdatachannel sub-projects, even when WebTorrent is disabled. A shallow
-# source clone does not populate those git submodules, so initialize only the
-# build-time submodules we need (recursively for their own dependencies).
 git -C $libtorrentDir submodule sync --recursive | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "libtorrent submodule sync failed" }
 git -C $libtorrentDir submodule update --init --recursive --depth=1 -- deps/try_signal deps/libdatachannel | Out-Host
@@ -76,7 +93,7 @@ $patchedSource = Join-Path $libtorrentDir "src\bt_peer_connection.cpp"
 if ($LASTEXITCODE -ne 0) { throw "libtorrent source hardening failed" }
 
 if (-not (Test-Path $boostDir)) {
-    git clone --depth=1 --recurse-submodules -j10 --branch boost-1.91.0 https://github.com/boostorg/boost.git $boostDir | Out-Host
+    git clone --depth=1 --recurse-submodules -j10 --branch $boostTag https://github.com/boostorg/boost.git $boostDir | Out-Host
 }
 if ($LASTEXITCODE -ne 0) { throw "Boost checkout failed" }
 
@@ -112,7 +129,6 @@ if ([string]::IsNullOrWhiteSpace($vcpkgRoot) -or -not (Test-Path (Join-Path $vcp
     throw "vcpkg is required to build the patched libtorrent with HTTPS tracker support. Set VCPKG_ROOT."
 }
 
-$triplet = "x64-windows-static-md"
 & (Join-Path $vcpkgRoot "vcpkg.exe") install "openssl:$triplet"
 if ($LASTEXITCODE -ne 0) { throw "vcpkg OpenSSL installation failed" }
 $opensslRoot = Join-Path $vcpkgRoot "installed\$triplet"
@@ -129,24 +145,21 @@ $env:PATH = "$boostDir;$env:PATH"
 
 $opensslInclude = (Join-Path $opensslRoot "include").Replace("\", "/")
 $opensslLib = (Join-Path $opensslRoot "lib").Replace("\", "/")
-$b2Args = "release address-model=64 libtorrent-link=static boost-link=static runtime-link=shared cxxstd=17 crypto=openssl webtorrent=off openssl-include=$opensslInclude openssl-lib=$opensslLib"
+$b2Args = "$b2BaseArgs openssl-include=$opensslInclude openssl-lib=$opensslLib"
 
 Push-Location (Join-Path $libtorrentDir "bindings\python")
 try {
     & $Python setup.py build_ext --b2-args $b2Args bdist_wheel
     if ($LASTEXITCODE -ne 0) { throw "patched libtorrent wheel build failed" }
 
-    $wheel = Get-ChildItem -Path .\dist -Filter "libtorrent-2.1.1-*.whl" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $wheel = Get-ChildItem -Path .\dist -Filter $wheelPattern |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
     if (-not $wheel) { throw "patched libtorrent wheel was not produced" }
+
     Write-Host "Installing patched wheel: $($wheel.FullName)"
     & $Python -m pip install --force-reinstall --no-deps $wheel.FullName
     if ($LASTEXITCODE -ne 0) { throw "patched libtorrent wheel installation failed" }
-
-    New-Item -ItemType Directory -Force -Path $wheelCacheDir | Out-Null
-    Get-ChildItem -Path $wheelCacheDir -Filter "libtorrent-2.1.1-*.whl" -ErrorAction SilentlyContinue |
-        Remove-Item -Force
-    Copy-Item $wheel.FullName (Join-Path $wheelCacheDir $wheel.Name) -Force
-    Write-Host "Cached patched wheel for future CI runs."
 } finally {
     Pop-Location
 }
@@ -154,4 +167,22 @@ try {
 & $Python (Join-Path $repoRoot "tools\verify_patched_libtorrent.py")
 if ($LASTEXITCODE -ne 0) { throw "patched libtorrent verification failed" }
 
-Write-Host "Patched libtorrent v2.1.1 is installed and verified."
+New-Item -ItemType Directory -Force -Path $licenseCacheDir | Out-Null
+Get-ChildItem -Path $cacheDir -Filter $wheelPattern -ErrorAction SilentlyContinue | Remove-Item -Force
+Copy-Item $wheel.FullName (Join-Path $cacheDir $wheel.Name) -Force
+Copy-Item (Join-Path $boostDir "LICENSE_1_0.txt") $cachedBoostLicense -Force
+
+$opensslLicenseCandidates = @(
+    (Join-Path $opensslRoot "share\openssl\copyright"),
+    (Join-Path $opensslRoot "LICENSE.txt"),
+    (Join-Path $opensslRoot "LICENSE")
+)
+$opensslLicense = $opensslLicenseCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $opensslLicense) {
+    throw "OpenSSL license not found under $opensslRoot"
+}
+Copy-Item $opensslLicense $cachedOpenSslLicense -Force
+Copy-Item $manifestPath (Join-Path $cacheDir "libtorrent_build_manifest.json") -Force
+
+Write-Host "Patched libtorrent $libtorrentVersion is installed and verified."
+Write-Host "Compact reusable cache populated: wheel + Boost/OpenSSL licenses."

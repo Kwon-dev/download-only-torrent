@@ -12,9 +12,10 @@ permissions:
 
 jobs:
   build:
-    # Match libtorrent's own Windows Python-binding CI toolchain rather than
-    # floating windows-latest to a newer Visual Studio image unexpectedly.
     runs-on: windows-2022
+    env:
+      PATCHED_LIBTORRENT_CACHE: ${{ runner.temp }}\patched-libtorrent-cache
+      PATCHED_LIBTORRENT_STAGE: ${{ runner.temp }}\patched-libtorrent-stage
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,18 +29,15 @@ jobs:
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # Restore the expensive source/build workspace before building. Split
-      # restore/save instead of using actions/cache as one step so a later
-      # packaging failure cannot prevent a freshly built wheel from being
-      # cached for the next retry.
-      - name: Restore patched libtorrent toolchain cache
+      # Cache only the reusable build outputs. The key intentionally excludes
+      # CI/build orchestration scripts: only the declared binary inputs and the
+      # actual libtorrent source transformation invalidate this wheel cache.
+      - name: Restore patched libtorrent wheel cache
         id: libtorrent-cache
         uses: actions/cache/restore@v4
         with:
-          path: |
-            ${{ runner.temp }}\download-only-torrent-deps
-            C:\vcpkg\installed\x64-windows-static-md
-          key: patched-libtorrent-${{ runner.os }}-py311-v2.1.1-boost1.91.0-${{ hashFiles('tools/build_patched_libtorrent.ps1', 'tools/patch_libtorrent_no_piece_upload.py') }}
+          path: ${{ env.PATCHED_LIBTORRENT_CACHE }}
+          key: patched-libtorrent-${{ runner.os }}-py311-${{ hashFiles('tools/libtorrent_build_manifest.json', 'tools/patch_libtorrent_no_piece_upload.py') }}
 
       - name: Install Python dependencies
         run: |
@@ -47,20 +45,17 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller pillow pefile
 
-      - name: Build patched libtorrent
+      - name: Build or restore patched libtorrent
         shell: pwsh
         run: .\tools\build_patched_libtorrent.ps1 -Python python
 
-      # Save immediately after a successful build. This is intentionally before
-      # PyInstaller and the release checks: if those fail, the ~30 minute
-      # libtorrent build is still reusable on the next CI run.
-      - name: Save patched libtorrent toolchain cache
+      # Save immediately after a successful cold build so later packaging
+      # failures never waste the expensive libtorrent compilation.
+      - name: Save patched libtorrent wheel cache
         if: steps.libtorrent-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: |
-            ${{ runner.temp }}\download-only-torrent-deps
-            C:\vcpkg\installed\x64-windows-static-md
+          path: ${{ env.PATCHED_LIBTORRENT_CACHE }}
           key: ${{ steps.libtorrent-cache.outputs.cache-primary-key }}
 
       - name: Generate app icon
@@ -71,6 +66,13 @@ jobs:
 
       - name: Verify patched libtorrent before packaging
         run: python tools/verify_patched_libtorrent.py
+
+      # Preserve the exact verified extension module outside PyInstaller's work
+      # tree. PyInstaller is allowed to process extension binaries while
+      # collecting them; the final release is explicitly restored from this
+      # verified staging copy afterwards.
+      - name: Stage exact patched libtorrent binary
+        run: python tools/finalize_patched_libtorrent.py stage --stage-dir "${{ env.PATCHED_LIBTORRENT_STAGE }}"
 
       - name: Build Windows app folder
         run: >-
@@ -95,58 +97,17 @@ jobs:
           print("Embedded icon resources verified.")
           '@ | python -
 
-      - name: Verify packaged libtorrent is hard-disabled build
-        shell: pwsh
-        run: |
-          @'
-          import hashlib
-          import importlib.util
-          from pathlib import Path
-
-          marker = b"DOWNLOAD_ONLY_TORRENT_PIECE_UPLOAD_DISABLED"
-
-          # Verify the source module used by PyInstaller first. Its SHA is only
-          # diagnostic: PyInstaller may legitimately rewrite PE metadata while
-          # collecting an extension module, so byte-for-byte equality is not a
-          # valid packaging invariant.
-          spec = importlib.util.find_spec("libtorrent")
-          assert spec is not None and spec.origin, "installed libtorrent not found"
-          installed = Path(spec.origin).resolve()
-          installed_data = installed.read_bytes()
-          assert marker in installed_data, "installed libtorrent is not the patched build"
-          installed_sha256 = hashlib.sha256(installed_data).hexdigest()
-          print(f"Installed patched module: {installed} SHA-256={installed_sha256}")
-
-          modules = list(Path(r"dist\DownloadOnlyTorrent").rglob("libtorrent*.pyd"))
-          assert modules, "packaged libtorrent .pyd not found"
-
-          marker_matches = []
-          for module in modules:
-              data = module.read_bytes()
-              digest = hashlib.sha256(data).hexdigest()
-              has_marker = marker in data
-              print(f"Packaged candidate: {module} SHA-256={digest} marker={has_marker}")
-              if has_marker:
-                  marker_matches.append(module)
-
-          assert marker_matches, (
-              "no packaged libtorrent module contains the compile-time hard-disable marker"
-          )
-          print("Packaged patched libtorrent verified:", marker_matches)
-          '@ | python -
+      - name: Restore and verify exact patched libtorrent in package
+        run: >-
+          python tools/finalize_patched_libtorrent.py finalize
+          --stage-dir "${{ env.PATCHED_LIBTORRENT_STAGE }}"
+          --dist-dir .\dist\DownloadOnlyTorrent
 
       - name: Add licenses and build provenance
-        shell: pwsh
-        run: |
-          $work = Join-Path $env:RUNNER_TEMP "download-only-torrent-deps"
-          $vcpkgRoot = $env:VCPKG_ROOT
-          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) { $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT }
-          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) { $vcpkgRoot = "C:\vcpkg" }
-          python tools/package_release_metadata.py `
-            --app-dir .\dist\DownloadOnlyTorrent `
-            --boost-root (Join-Path $work "boost") `
-            --openssl-root (Join-Path $vcpkgRoot "installed\x64-windows-static-md") `
-            --libtorrent-source (Join-Path $work "libtorrent")
+        run: >-
+          python tools/package_release_metadata.py
+          --app-dir .\dist\DownloadOnlyTorrent
+          --cache-dir "${{ env.PATCHED_LIBTORRENT_CACHE }}"
 
       - name: Smoke test
         shell: pwsh
