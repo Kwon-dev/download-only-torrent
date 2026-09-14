@@ -27,7 +27,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller pillow
+          pip install pyinstaller pillow pefile
 
       - name: Generate app icon
         run: python tools/generate_icon.py
@@ -43,17 +43,36 @@ jobs:
           --collect-all libtorrent
           app.py
 
+      - name: Verify embedded Windows icon
+        shell: pwsh
+        run: |
+          @'
+          import pefile
+          pe = pefile.PE(r"dist\DownloadOnlyTorrent.exe")
+          resource_ids = {
+              entry.id for entry in pe.DIRECTORY_ENTRY_RESOURCE.entries
+              if entry.name is None
+          }
+          assert 3 in resource_ids, "RT_ICON resource missing"
+          assert 14 in resource_ids, "RT_GROUP_ICON resource missing"
+          print("Embedded icon resources verified.")
+          '@ | python -
+
       - name: Smoke test
         shell: pwsh
         run: |
           $process = Start-Process -FilePath .\dist\DownloadOnlyTorrent.exe -ArgumentList '--version' -PassThru -Wait
           if ($process.ExitCode -ne 0) { exit $process.ExitCode }
 
+      - name: Create cache-safe artifact filename
+        shell: pwsh
+        run: Copy-Item .\dist\DownloadOnlyTorrent.exe ".\dist\DownloadOnlyTorrent-r${{ github.run_number }}.exe"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DownloadOnlyTorrent-windows-x64
-          path: dist/DownloadOnlyTorrent.exe
+          name: DownloadOnlyTorrent-windows-x64-r${{ github.run_number }}
+          path: dist/DownloadOnlyTorrent-r${{ github.run_number }}.exe
           if-no-files-found: error
           retention-days: 14
 
