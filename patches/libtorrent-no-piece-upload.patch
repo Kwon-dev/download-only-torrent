@@ -1,0 +1,74 @@
+diff --git a/src/bt_peer_connection.cpp b/src/bt_peer_connection.cpp
+--- a/src/bt_peer_connection.cpp
++++ b/src/bt_peer_connection.cpp
+@@ -2467,51 +2467,19 @@ namespace libtorrent::aux {
+ 	}
+ 
+ 	void bt_peer_connection::write_piece(peer_request const& r, disk_buffer_holder buffer)
+ 	{
+-		INVARIANT_CHECK;
+-		TORRENT_ASSERT(m_sent_handshake);
+-		TORRENT_ASSERT(m_sent_bitfield);
+-		TORRENT_ASSERT(r.length >= 0);
+-
+-		auto t = associated_torrent().lock();
+-		TORRENT_ASSERT(t);
+-	// the hash piece looks like this:
+-	// uint8_t  msg
+-	// uint32_t piece index
+-	// uint32_t start
+-	// uint32_t list len
+-	// var      bencoded list
+-	// var      piece data
+-		char msg[4 + 1 + 4 + 4 + 4];
+-		char* ptr = msg;
+-		TORRENT_ASSERT(r.length <= 16 * 1024);
+-		aux::write_int32(r.length + 1 + 4 + 4, ptr);
+-		aux::write_uint8(msg_piece, ptr);
+-		aux::write_int32(static_cast<int>(r.piece), ptr);
+-		aux::write_int32(r.start, ptr);
+-
+-		send_buffer({msg, 13});
+-		if (buffer.is_mutable())
+-		{
+-			append_send_buffer(std::move(buffer), r.length);
+-		}
+-		else
+-		{
+-			append_const_send_buffer(std::move(buffer), r.length);
+-		}
+-
+-		m_payloads.emplace_back(send_buffer_size() - r.length, r.length);
+-		setup_send();
+-
+-		stats_counters().inc_stats_counter(counters::num_outgoing_piece);
+-		if (t->alerts().should_post<block_uploaded_alert>())
+-		{
+-			t->alerts().emplace_alert<block_uploaded_alert>(t->get_handle(),
+-				remote_endpoint(), pid(), r.start / t->block_size() , r.piece);
+-		}
+-	#ifndef TORRENT_DISABLE_EXTENSIONS
+-		extension_notify(&peer_plugin::sent_piece, r);
+-	#endif
++		// Download Only Torrent hardening patch.
++		//
++		// The upstream implementation constructs a BitTorrent PIECE message and
++		// appends the requested disk buffer to the socket send queue. This build
++		// intentionally removes that code path entirely. Even if higher-level
++		// choking/unchoke policy regresses, or a peer uses the Fast Extension's
++		// allowed-fast mechanism while choked, file piece payload cannot be
++		// queued by this transport implementation.
++		(void)buffer;
++
++	#ifndef TORRENT_DISABLE_LOGGING
++		peer_log(peer_log_alert::outgoing_message, peer_log_alert::piece,
++			"DOWNLOAD_ONLY_TORRENT_PIECE_UPLOAD_DISABLED p:%d s:%d l:%d",
++			static_cast<int>(r.piece), r.start, r.length);
++	#endif
++
++		// Treat any attempt to enter the removed upload path as a policy
++		// violation and close this peer connection immediately.
++		disconnect(errors::torrent_paused, operation_t::bittorrent);
+ 	}
+ 
+ 	// --------------------------
