@@ -48,8 +48,6 @@ def find_distribution_license(filename: str) -> Path:
             if candidate.is_file():
                 return candidate
 
-    # Some wheel layouts place LICENSES beside the package rather than listing
-    # them in the meta-package. Search only likely package roots as a fallback.
     roots: set[Path] = set()
     for value in site.getsitepackages():
         roots.add(Path(value))
@@ -114,7 +112,9 @@ def main() -> int:
     copy(repo_root / "LICENSE", app_dir / "LICENSE")
     copy(repo_root / "THIRD_PARTY_NOTICES.md", app_dir / "THIRD_PARTY_NOTICES.md")
     copy(repo_root / "QT_LGPL_SOURCE_OFFER.md", app_dir / "QT_LGPL_SOURCE_OFFER.md")
-    copy(repo_root / "patches" / "libtorrent-no-piece-upload.patch", licenses / "libtorrent-no-piece-upload.patch")
+
+    patcher = repo_root / "tools" / "patch_libtorrent_no_piece_upload.py"
+    copy(patcher, licenses / "libtorrent-no-piece-upload-patcher.py")
 
     libtorrent_license = repo_root / "LICENSES" / "libtorrent.txt"
     if args.libtorrent_source:
@@ -146,7 +146,6 @@ def main() -> int:
             raise FileNotFoundError(f"OpenSSL license not found under {openssl_root}")
 
     module = find_libtorrent_binary()
-    patch = repo_root / "patches" / "libtorrent-no-piece-upload.patch"
     exe = app_dir / "DownloadOnlyTorrent.exe"
     lines = [
         "Download Only Torrent - patched libtorrent build provenance",
@@ -154,11 +153,12 @@ def main() -> int:
         f"libtorrent upstream tag: {LIBTORRENT_TAG}",
         f"libtorrent upstream commit: {LIBTORRENT_COMMIT}",
         "patched source: src/bt_peer_connection.cpp::write_piece()",
+        "source transformation: tools/patch_libtorrent_no_piece_upload.py",
         "policy: BitTorrent PIECE payload queueing code removed; attempted entry disconnects the peer",
         f"compiled marker: {PATCH_MARKER.decode('ascii')}",
         f"libtorrent module: {module.name}",
         f"libtorrent module SHA-256: {sha256(module)}",
-        f"patch SHA-256: {sha256(patch)}",
+        f"source patcher SHA-256: {sha256(patcher)}",
     ]
     if exe.is_file():
         lines.append(f"DownloadOnlyTorrent.exe SHA-256: {sha256(exe)}")
