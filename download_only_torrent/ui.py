@@ -2,14 +2,35 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QTimer, Qt
+from PySide6.QtCore import QEvent, QPoint, QTimer, Qt
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QProgressBar, QPushButton, QSpinBox, QStyle,
-    QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget, QMenu,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSpinBox,
+    QStyle,
+    QSystemTrayIcon,
+    QTableWidget,
+    QTableWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from .config import AppConfig
@@ -19,11 +40,27 @@ from .utils import format_bytes, format_rate
 
 DARK_STYLESHEET = """
 QWidget { background: #1f2329; color: #e6edf3; }
-QLineEdit, QSpinBox, QComboBox, QTreeWidget, QTableWidget { background: #15191e; border: 1px solid #3a414a; padding: 4px; }
-QPushButton { background: #2d333b; border: 1px solid #444c56; padding: 6px 10px; }
+QLineEdit, QSpinBox, QComboBox, QTreeWidget, QTableWidget {
+    background: #15191e;
+    border: 1px solid #3a414a;
+    padding: 4px;
+}
+QPushButton {
+    background: #2d333b;
+    border: 1px solid #444c56;
+    padding: 6px 10px;
+}
 QPushButton:hover { background: #373e47; }
-QHeaderView::section { background: #2d333b; color: #e6edf3; padding: 5px; border: 0; }
-QProgressBar { border: 1px solid #444c56; text-align: center; }
+QHeaderView::section {
+    background: #2d333b;
+    color: #e6edf3;
+    padding: 5px;
+    border: 0;
+}
+QProgressBar {
+    border: 1px solid #444c56;
+    text-align: center;
+}
 QProgressBar::chunk { background: #3b82f6; }
 QCheckBox::indicator, QTreeView::indicator {
     width: 16px;
@@ -188,7 +225,14 @@ def apply_theme(app: QApplication, theme: str) -> None:
 
 
 class FileSelectionDialog(QDialog):
-    def __init__(self, title: str, files: list[TorrentFile], default_dir: str, language: str, parent=None):
+    def __init__(
+        self,
+        title: str,
+        files: list[TorrentFile],
+        default_dir: str,
+        language: str,
+        parent=None,
+    ):
         super().__init__(parent)
         self.language = language
         self.setWindowTitle(tr(language, "select_files", title=title))
@@ -200,17 +244,27 @@ class FileSelectionDialog(QDialog):
         row = QHBoxLayout()
         select_all = QPushButton(tr(language, "select_all"))
         clear_all = QPushButton(tr(language, "clear_all"))
-        select_all.clicked.connect(lambda: self._set_all(Qt.CheckState.Checked))
-        clear_all.clicked.connect(lambda: self._set_all(Qt.CheckState.Unchecked))
+        select_all.clicked.connect(
+            lambda: self._set_all(Qt.CheckState.Checked)
+        )
+        clear_all.clicked.connect(
+            lambda: self._set_all(Qt.CheckState.Unchecked)
+        )
         row.addWidget(select_all)
         row.addWidget(clear_all)
         row.addStretch()
         layout.addLayout(row)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels([tr(language, "file"), tr(language, "size")])
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.setHeaderLabels(
+            [tr(language, "file"), tr(language, "size")]
+        )
+        self.tree.header().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        self.tree.header().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
         layout.addWidget(self.tree, 1)
         self._populate_tree()
 
@@ -223,7 +277,10 @@ class FileSelectionDialog(QDialog):
         path_row.addWidget(browse)
         layout.addLayout(path_row)
 
-        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
         box.accepted.connect(self._accept_checked)
         box.rejected.connect(self.reject)
         layout.addWidget(box)
@@ -239,13 +296,24 @@ class FileSelectionDialog(QDialog):
                 item = folders.get(prefix)
                 if item is None:
                     item = QTreeWidgetItem([part, ""])
-                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
+                    item.setFlags(
+                        item.flags()
+                        | Qt.ItemFlag.ItemIsUserCheckable
+                        | Qt.ItemFlag.ItemIsAutoTristate
+                    )
                     item.setCheckState(0, Qt.CheckState.Checked)
                     parent.addChild(item)
                     folders[prefix] = item
                 parent = item
-            leaf = QTreeWidgetItem([parts[-1] if parts else file.path, format_bytes(file.size)])
-            leaf.setFlags(leaf.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            leaf = QTreeWidgetItem(
+                [
+                    parts[-1] if parts else file.path,
+                    format_bytes(file.size),
+                ]
+            )
+            leaf.setFlags(
+                leaf.flags() | Qt.ItemFlag.ItemIsUserCheckable
+            )
             leaf.setCheckState(0, Qt.CheckState.Checked)
             leaf.setData(0, Qt.ItemDataRole.UserRole, file.index)
             parent.addChild(leaf)
@@ -257,16 +325,28 @@ class FileSelectionDialog(QDialog):
             root.child(i).setCheckState(0, state)
 
     def _browse(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, tr(self.language, "download_folder"), self.path_edit.text())
+        path = QFileDialog.getExistingDirectory(
+            self,
+            tr(self.language, "download_folder"),
+            self.path_edit.text(),
+        )
         if path:
             self.path_edit.setText(path)
 
     def _accept_checked(self) -> None:
         if not self.selected_indices():
-            QMessageBox.warning(self, tr(self.language, "no_files_title"), tr(self.language, "no_files"))
+            QMessageBox.warning(
+                self,
+                tr(self.language, "no_files_title"),
+                tr(self.language, "no_files"),
+            )
             return
         if not self.path_edit.text().strip():
-            QMessageBox.warning(self, tr(self.language, "no_dest_title"), tr(self.language, "no_dest"))
+            QMessageBox.warning(
+                self,
+                tr(self.language, "no_dest_title"),
+                tr(self.language, "no_dest"),
+            )
             return
         self.accept()
 
@@ -278,7 +358,10 @@ class FileSelectionDialog(QDialog):
             for i in range(item.childCount()):
                 child = item.child(i)
                 idx = child.data(0, Qt.ItemDataRole.UserRole)
-                if idx is not None and child.checkState(0) == Qt.CheckState.Checked:
+                if (
+                    idx is not None
+                    and child.checkState(0) == Qt.CheckState.Checked
+                ):
                     result.append(int(idx))
                 stack.append(child)
         return sorted(result)
@@ -289,7 +372,14 @@ class FileSelectionDialog(QDialog):
 
 
 class MagnetMetadataDialog(QDialog):
-    def __init__(self, engine: TorrentEngine, magnet_uri: str, save_path: str, language: str, parent=None):
+    def __init__(
+        self,
+        engine: TorrentEngine,
+        magnet_uri: str,
+        save_path: str,
+        language: str,
+        parent=None,
+    ):
         super().__init__(parent)
         self.engine = engine
         self.language = language
@@ -319,7 +409,9 @@ class MagnetMetadataDialog(QDialog):
                 self.accept()
         except Exception as exc:
             self.timer.stop()
-            QMessageBox.critical(self, tr(self.language, "magnet_error"), str(exc))
+            QMessageBox.critical(
+                self, tr(self.language, "magnet_error"), str(exc)
+            )
             self.reject()
 
     def reject(self) -> None:
@@ -359,27 +451,45 @@ class SettingsDialog(QDialog):
         self.max_connections.setValue(config.max_connections)
         form.addRow(tr(lang, "max_peers"), self.max_connections)
 
-        self.dht = QCheckBox(tr(lang, "enable_dht")); self.dht.setChecked(config.enable_dht)
-        self.pex = QCheckBox(tr(lang, "enable_pex")); self.pex.setChecked(config.enable_pex)
-        self.lsd = QCheckBox(tr(lang, "enable_lsd")); self.lsd.setChecked(config.enable_lsd)
-        self.tcp = QCheckBox(tr(lang, "enable_tcp")); self.tcp.setChecked(config.enable_tcp)
-        self.utp = QCheckBox(tr(lang, "enable_utp")); self.utp.setChecked(config.enable_utp)
-        for label, widget in (("DHT", self.dht), ("PEX", self.pex), ("LSD", self.lsd), ("TCP", self.tcp), ("uTP", self.utp)):
+        self.dht = QCheckBox(tr(lang, "enable_dht"))
+        self.dht.setChecked(config.enable_dht)
+        self.pex = QCheckBox(tr(lang, "enable_pex"))
+        self.pex.setChecked(config.enable_pex)
+        self.lsd = QCheckBox(tr(lang, "enable_lsd"))
+        self.lsd.setChecked(config.enable_lsd)
+        self.tcp = QCheckBox(tr(lang, "enable_tcp"))
+        self.tcp.setChecked(config.enable_tcp)
+        self.utp = QCheckBox(tr(lang, "enable_utp"))
+        self.utp.setChecked(config.enable_utp)
+        for label, widget in (
+            ("DHT", self.dht),
+            ("PEX", self.pex),
+            ("LSD", self.lsd),
+            ("TCP", self.tcp),
+            ("uTP", self.utp),
+        ):
             form.addRow(label, widget)
 
         self.delete_source = QCheckBox(tr(lang, "delete_source"))
         self.delete_source.setChecked(config.delete_torrent_source)
         form.addRow(tr(lang, "completion"), self.delete_source)
 
-        for text in (tr(lang, "seeding_disabled"), tr(lang, "upload_disabled"), tr(lang, "remove_after")):
+        for text in (
+            tr(lang, "seeding_disabled"),
+            tr(lang, "upload_disabled"),
+            tr(lang, "remove_after"),
+        ):
             fixed = QCheckBox(text)
             fixed.setChecked(True)
             fixed.setEnabled(False)
             form.addRow(tr(lang, "policy"), fixed)
 
-        self.start_windows = QCheckBox(tr(lang, "start_windows")); self.start_windows.setChecked(config.start_with_windows)
-        self.minimize_tray = QCheckBox(tr(lang, "minimize_tray")); self.minimize_tray.setChecked(config.minimize_to_tray)
-        self.notify = QCheckBox(tr(lang, "notify_complete")); self.notify.setChecked(config.notify_on_complete)
+        self.start_windows = QCheckBox(tr(lang, "start_windows"))
+        self.start_windows.setChecked(config.start_with_windows)
+        self.minimize_tray = QCheckBox(tr(lang, "minimize_tray"))
+        self.minimize_tray.setChecked(config.minimize_to_tray)
+        self.notify = QCheckBox(tr(lang, "notify_complete"))
+        self.notify.setChecked(config.notify_on_complete)
         form.addRow(tr(lang, "startup"), self.start_windows)
         form.addRow(tr(lang, "tray"), self.minimize_tray)
         form.addRow(tr(lang, "notifications"), self.notify)
@@ -397,13 +507,20 @@ class SettingsDialog(QDialog):
         form.addRow(tr(lang, "language"), self.language)
 
         layout.addLayout(form)
-        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
         box.accepted.connect(self.accept)
         box.rejected.connect(self.reject)
         layout.addWidget(box)
 
     def _browse(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, tr(self.config.language, "download_folder"), self.download_dir.text())
+        path = QFileDialog.getExistingDirectory(
+            self,
+            tr(self.config.language, "download_folder"),
+            self.download_dir.text(),
+        )
         if path:
             self.download_dir.setText(path)
 
@@ -422,6 +539,7 @@ class SettingsDialog(QDialog):
         self.config.notify_on_complete = self.notify.isChecked()
         self.config.theme = self.theme.currentText()
         self.config.language = str(self.language.currentData())
+        self.config.language_user_selected = True
         self.config.save()
 
 
@@ -445,7 +563,11 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self) -> None:
         self.toolbar = self.addToolBar("Main")
         self.toolbar.setMovable(False)
-        for key, slot in (("add_torrent", self.add_torrent), ("add_magnet", self.add_magnet), ("pause", self.pause_selected), ("resume", self.resume_selected), ("remove", self.remove_selected), ("settings", self.open_settings)):
+        for key, slot in (
+            ("add_torrent", self.add_torrent),
+            ("add_magnet", self.add_magnet),
+            ("settings", self.open_settings),
+        ):
             action = QAction(self)
             action.triggered.connect(slot)
             self.toolbar.addAction(action)
@@ -453,23 +575,50 @@ class MainWindow(QMainWindow):
 
     def _build_table(self) -> None:
         self.table = QTableWidget(0, 7)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+        self.table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        self.table.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.table.customContextMenuRequested.connect(
+            self._show_task_context_menu
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            6, QHeaderView.ResizeMode.Stretch
+        )
         for col in (1, 2, 3, 4, 5):
-            self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+            self.table.horizontalHeader().setSectionResizeMode(
+                col, QHeaderView.ResizeMode.ResizeToContents
+            )
         self.setCentralWidget(self.table)
 
     def _build_tray(self) -> None:
-        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+        icon = self.style().standardIcon(
+            QStyle.StandardPixmap.SP_ArrowDown
+        )
         self.setWindowIcon(icon)
         self.tray = QSystemTrayIcon(icon, self)
         self.tray_menu = QMenu()
         self.tray_open = self.tray_menu.addAction("", self._restore)
-        self.tray_quit = self.tray_menu.addAction("", QApplication.instance().quit)
+        self.tray_quit = self.tray_menu.addAction(
+            "", QApplication.instance().quit
+        )
         self.tray.setContextMenu(self.tray_menu)
-        self.tray.activated.connect(lambda reason: self._restore() if reason == QSystemTrayIcon.ActivationReason.DoubleClick else None)
+        self.tray.activated.connect(
+            lambda reason: self._restore()
+            if reason == QSystemTrayIcon.ActivationReason.DoubleClick
+            else None
+        )
         self.tray.show()
 
     def _retranslate(self) -> None:
@@ -478,66 +627,128 @@ class MainWindow(QMainWindow):
         self.toolbar.setWindowTitle(tr(lang, "toolbar_main"))
         for key, action in self.actions.items():
             action.setText(tr(lang, key))
-        self.table.setHorizontalHeaderLabels([
-            tr(lang, "name"), tr(lang, "progress"), tr(lang, "down"),
-            tr(lang, "piece_upload"), tr(lang, "peers"), tr(lang, "state"), tr(lang, "save_path")
-        ])
+        self.table.setHorizontalHeaderLabels(
+            [
+                tr(lang, "name"),
+                tr(lang, "progress"),
+                tr(lang, "down"),
+                tr(lang, "piece_upload"),
+                tr(lang, "peers"),
+                tr(lang, "state"),
+                tr(lang, "save_path"),
+            ]
+        )
         self.tray_open.setText(tr(lang, "open"))
         self.tray_quit.setText(tr(lang, "quit"))
 
     def add_torrent(self) -> None:
         lang = self.config.language
-        path, _ = QFileDialog.getOpenFileName(self, tr(lang, "open_torrent"), "", tr(lang, "torrent_files"))
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr(lang, "open_torrent"),
+            "",
+            tr(lang, "torrent_files"),
+        )
         if not path:
             return
         try:
             title, files = self.engine.preview_torrent(path)
-            dialog = FileSelectionDialog(title, files, self.config.download_dir, lang, self)
+            dialog = FileSelectionDialog(
+                title,
+                files,
+                self.config.download_dir,
+                lang,
+                self,
+            )
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.config.download_dir = dialog.save_path
                 self.config.save()
-                self.engine.add_torrent_file(path, dialog.save_path, dialog.selected_indices())
+                self.engine.add_torrent_file(
+                    path,
+                    dialog.save_path,
+                    dialog.selected_indices(),
+                )
         except Exception as exc:
-            QMessageBox.critical(self, tr(lang, "torrent_error"), str(exc))
+            QMessageBox.critical(
+                self, tr(lang, "torrent_error"), str(exc)
+            )
 
     def add_magnet(self) -> None:
         lang = self.config.language
-        uri, ok = QInputDialog.getMultiLineText(self, tr(lang, "add_magnet"), tr(lang, "magnet_uri"))
+        uri, ok = QInputDialog.getMultiLineText(
+            self, tr(lang, "add_magnet"), tr(lang, "magnet_uri")
+        )
         uri = uri.strip()
         if not ok or not uri:
             return
         if not uri.lower().startswith("magnet:?"):
-            QMessageBox.warning(self, tr(lang, "invalid_magnet_title"), tr(lang, "invalid_magnet"))
+            QMessageBox.warning(
+                self,
+                tr(lang, "invalid_magnet_title"),
+                tr(lang, "invalid_magnet"),
+            )
             return
         try:
-            loader = MagnetMetadataDialog(self.engine, uri, self.config.download_dir, lang, self)
-            if loader.exec() != QDialog.DialogCode.Accepted or loader.metadata is None:
+            loader = MagnetMetadataDialog(
+                self.engine,
+                uri,
+                self.config.download_dir,
+                lang,
+                self,
+            )
+            if (
+                loader.exec() != QDialog.DialogCode.Accepted
+                or loader.metadata is None
+            ):
                 return
             title, files = loader.metadata
-            dialog = FileSelectionDialog(title, files, self.config.download_dir, lang, self)
+            dialog = FileSelectionDialog(
+                title,
+                files,
+                self.config.download_dir,
+                lang,
+                self,
+            )
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.config.download_dir = dialog.save_path
                 self.config.save()
-                self.engine.pending_magnets[loader.token].save_path = dialog.save_path
-                self.engine.start_magnet(loader.token, dialog.selected_indices())
+                self.engine.pending_magnets[
+                    loader.token
+                ].save_path = dialog.save_path
+                self.engine.start_magnet(
+                    loader.token, dialog.selected_indices()
+                )
             else:
                 self.engine.cancel_pending_magnet(loader.token)
         except Exception as exc:
-            QMessageBox.critical(self, tr(lang, "magnet_error"), str(exc))
+            QMessageBox.critical(
+                self, tr(lang, "magnet_error"), str(exc)
+            )
 
     def _poll(self) -> None:
         lang = self.config.language
         for snap in self.engine.poll():
             if snap.error:
-                QMessageBox.critical(self, tr(lang, "download_stopped"), f"{snap.name}\n\n{snap.error}")
+                QMessageBox.critical(
+                    self,
+                    tr(lang, "download_stopped"),
+                    f"{snap.name}\n\n{snap.error}",
+                )
             if snap.completed and self.config.notify_on_complete:
-                self.tray.showMessage(tr(lang, "download_complete"), snap.name, QSystemTrayIcon.MessageIcon.Information, 5000)
+                self.tray.showMessage(
+                    tr(lang, "download_complete"),
+                    snap.name,
+                    QSystemTrayIcon.MessageIcon.Information,
+                    5000,
+                )
             if snap.removed:
                 self._remove_row(snap.task_id)
                 continue
             row = self._ensure_row(snap.task_id)
             self.table.setItem(row, 0, QTableWidgetItem(snap.name))
-            self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, snap.task_id)
+            self.table.item(row, 0).setData(
+                Qt.ItemDataRole.UserRole, snap.task_id
+            )
             bar = self.table.cellWidget(row, 1)
             if not isinstance(bar, QProgressBar):
                 bar = QProgressBar()
@@ -545,11 +756,23 @@ class MainWindow(QMainWindow):
                 self.table.setCellWidget(row, 1, bar)
             bar.setValue(int(snap.progress * 1000))
             bar.setFormat(f"{snap.progress * 100:.1f}%")
-            self.table.setItem(row, 2, QTableWidgetItem(format_rate(snap.download_rate)))
-            self.table.setItem(row, 3, QTableWidgetItem(format_bytes(snap.payload_uploaded)))
-            self.table.setItem(row, 4, QTableWidgetItem(str(snap.peers)))
-            self.table.setItem(row, 5, QTableWidgetItem(snap.state))
-            self.table.setItem(row, 6, QTableWidgetItem(snap.save_path))
+            self.table.setItem(
+                row, 2, QTableWidgetItem(format_rate(snap.download_rate))
+            )
+            self.table.setItem(
+                row,
+                3,
+                QTableWidgetItem(format_bytes(snap.payload_uploaded)),
+            )
+            self.table.setItem(
+                row, 4, QTableWidgetItem(str(snap.peers))
+            )
+            self.table.setItem(
+                row, 5, QTableWidgetItem(snap.state)
+            )
+            self.table.setItem(
+                row, 6, QTableWidgetItem(snap.save_path)
+            )
 
     def _ensure_row(self, task_id: str) -> int:
         if task_id in self.rows:
@@ -568,13 +791,44 @@ class MainWindow(QMainWindow):
             if current > row:
                 self.rows[key] = current - 1
 
-    def _selected_task_id(self) -> str | None:
-        row = self.table.currentRow()
+    def _task_id_at_row(self, row: int) -> str | None:
         if row < 0:
             return None
         item = self.table.item(row, 0)
         value = item.data(Qt.ItemDataRole.UserRole) if item else None
         return str(value) if value else None
+
+    def _selected_task_id(self) -> str | None:
+        return self._task_id_at_row(self.table.currentRow())
+
+    def _show_task_context_menu(self, pos: QPoint) -> None:
+        row = self.table.indexAt(pos).row()
+        task_id = self._task_id_at_row(row)
+        if not task_id:
+            return
+
+        self.table.selectRow(row)
+        menu = QMenu(self)
+        lang = self.config.language
+        pause_action = menu.addAction(tr(lang, "pause"))
+        resume_action = menu.addAction(tr(lang, "resume"))
+        menu.addSeparator()
+        remove_action = menu.addAction(tr(lang, "remove"))
+
+        paused = self.engine.is_paused(task_id)
+        pause_action.setEnabled(not paused)
+        resume_action.setEnabled(paused)
+
+        chosen = menu.exec(
+            self.table.viewport().mapToGlobal(pos)
+        )
+        if chosen is pause_action:
+            self.engine.pause(task_id)
+        elif chosen is resume_action:
+            self.engine.resume(task_id)
+        elif chosen is remove_action:
+            self.engine.remove(task_id)
+            self._remove_row(task_id)
 
     def pause_selected(self) -> None:
         task_id = self._selected_task_id()
@@ -597,11 +851,17 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             dialog.apply()
             self.engine.apply_config(self.config)
-            apply_theme(QApplication.instance(), self.config.theme)
+            apply_theme(
+                QApplication.instance(), self.config.theme
+            )
             self._retranslate()
 
     def changeEvent(self, event: QEvent) -> None:
-        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized() and self.config.minimize_to_tray:
+        if (
+            event.type() == QEvent.Type.WindowStateChange
+            and self.isMinimized()
+            and self.config.minimize_to_tray
+        ):
             QTimer.singleShot(0, self.hide)
         super().changeEvent(event)
 
