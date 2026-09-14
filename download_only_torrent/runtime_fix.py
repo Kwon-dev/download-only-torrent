@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def apply_runtime_network_fix(engine) -> None:
-    """Make libtorrent networking robust on Windows hosts with reserved ports.
+    """Apply Windows networking fixes and remove active-torrent queue limits.
 
     The default libtorrent listen port is 6881. Windows/Hyper-V/WSL/VPN stacks
     can reserve that port and cause every listen socket to fail. libtorrent also
@@ -12,14 +12,44 @@ def apply_runtime_network_fix(engine) -> None:
     Port 0 asks the OS to select a currently available ephemeral port. Since this
     client never seeds, keeping a stable incoming port across launches is not
     important; reliable outbound discovery is more useful.
+
+    This application explicitly disables auto-management on added torrents, but
+    the active_* limits are also set to unlimited so there is no hidden session
+    queue that can cap the number of simultaneous downloads.
     """
 
-    engine.session.apply_settings(
-        {
-            "listen_interfaces": "0.0.0.0:0,[::]:0",
-            "listen_system_port_fallback": True,
-        }
-    )
+    settings = {
+        "listen_interfaces": "0.0.0.0:0,[::]:0",
+        "listen_system_port_fallback": True,
+        "active_downloads": -1,
+        "active_seeds": -1,
+        "active_checking": -1,
+        "active_dht_limit": -1,
+        "active_tracker_limit": -1,
+        "active_lsd_limit": -1,
+        "active_limit": -1,
+    }
+
+    # Apply the network settings first because they are required for peer
+    # discovery. Some older bindings may not expose every active_* key; in that
+    # case retry them individually without sacrificing the listen-port fix.
+    try:
+        engine.session.apply_settings(settings)
+    except Exception:
+        engine.session.apply_settings(
+            {
+                "listen_interfaces": "0.0.0.0:0,[::]:0",
+                "listen_system_port_fallback": True,
+            }
+        )
+        for key, value in settings.items():
+            if not key.startswith("active_"):
+                continue
+            try:
+                engine.session.apply_settings({key: value})
+            except Exception:
+                pass
+
     refresh_discovery(engine)
 
 
