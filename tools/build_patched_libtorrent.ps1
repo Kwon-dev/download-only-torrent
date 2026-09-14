@@ -39,6 +39,15 @@ if ($actualRevision -ne $expectedRevision) {
     throw "unexpected libtorrent v2.1.1 revision: $actualRevision"
 }
 
+# libtorrent's root Jamfile unconditionally loads the try_signal and
+# libdatachannel sub-projects, even when WebTorrent is disabled. A shallow
+# source clone does not populate those git submodules, so initialize only the
+# build-time submodules we need (recursively for their own dependencies).
+git -C $libtorrentDir submodule sync --recursive | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "libtorrent submodule sync failed" }
+git -C $libtorrentDir submodule update --init --recursive --depth=1 -- deps/try_signal deps/libdatachannel | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "libtorrent dependency submodule initialization failed" }
+
 $patchedSource = Join-Path $libtorrentDir "src\bt_peer_connection.cpp"
 & $Python $patcher $patchedSource
 if ($LASTEXITCODE -ne 0) { throw "libtorrent source hardening failed" }
@@ -97,7 +106,7 @@ $env:PATH = "$boostDir;$env:PATH"
 
 $opensslInclude = (Join-Path $opensslRoot "include").Replace("\", "/")
 $opensslLib = (Join-Path $opensslRoot "lib").Replace("\", "/")
-$b2Args = "release address-model=64 libtorrent-link=static boost-link=static runtime-link=shared cxxstd=17 crypto=openssl openssl-include=$opensslInclude openssl-lib=$opensslLib"
+$b2Args = "release address-model=64 libtorrent-link=static boost-link=static runtime-link=shared cxxstd=17 crypto=openssl webtorrent=off openssl-include=$opensslInclude openssl-lib=$opensslLib"
 
 Push-Location (Join-Path $libtorrentDir "bindings\python")
 try {
