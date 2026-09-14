@@ -19,9 +19,32 @@ $WorkRoot = (Resolve-Path $WorkRoot).Path
 
 $libtorrentDir = Join-Path $WorkRoot "libtorrent"
 $boostDir = Join-Path $WorkRoot "boost"
+$wheelCacheDir = Join-Path $WorkRoot "wheel-cache"
 $patcher = Join-Path $repoRoot "tools\patch_libtorrent_no_piece_upload.py"
 
 Write-Host "Dependency workspace: $WorkRoot"
+
+# GitHub Actions caches the dependency workspace. If a wheel produced by the
+# exact cache key is available, install and verify it instead of rebuilding
+# libtorrent/Boost from source. The workflow cache key includes this script and
+# the source patcher, so any hardening/build change automatically invalidates it.
+$cachedWheel = $null
+if (Test-Path $wheelCacheDir) {
+    $cachedWheel = Get-ChildItem -Path $wheelCacheDir -Filter "libtorrent-2.1.1-*.whl" |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+}
+if ($cachedWheel) {
+    Write-Host "Using cached patched libtorrent wheel: $($cachedWheel.FullName)"
+    & $Python -m pip install --force-reinstall --no-deps $cachedWheel.FullName
+    if ($LASTEXITCODE -ne 0) { throw "cached patched libtorrent wheel installation failed" }
+
+    & $Python (Join-Path $repoRoot "tools\verify_patched_libtorrent.py")
+    if ($LASTEXITCODE -ne 0) { throw "cached patched libtorrent verification failed" }
+
+    Write-Host "Cached patched libtorrent v2.1.1 is installed and verified."
+    exit 0
+}
 
 if (Test-Path $libtorrentDir) {
     git -C $libtorrentDir reset --hard | Out-Host
@@ -118,6 +141,12 @@ try {
     Write-Host "Installing patched wheel: $($wheel.FullName)"
     & $Python -m pip install --force-reinstall --no-deps $wheel.FullName
     if ($LASTEXITCODE -ne 0) { throw "patched libtorrent wheel installation failed" }
+
+    New-Item -ItemType Directory -Force -Path $wheelCacheDir | Out-Null
+    Get-ChildItem -Path $wheelCacheDir -Filter "libtorrent-2.1.1-*.whl" -ErrorAction SilentlyContinue |
+        Remove-Item -Force
+    Copy-Item $wheel.FullName (Join-Path $wheelCacheDir $wheel.Name) -Force
+    Write-Host "Cached patched wheel for future CI runs."
 } finally {
     Pop-Location
 }
