@@ -1,6 +1,6 @@
 # Download Only Torrent
 
-A small Windows BitTorrent client focused on **download-only use**. It is built with Python, PySide6 and libtorrent.
+A small Windows BitTorrent client focused on **download-only use**. It is built with Python, PySide6 and a patched libtorrent.
 
 ## Features
 
@@ -27,7 +27,10 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 - Seeding is disabled by policy
 - Session unchoke slots are set to `0`
 - The libtorrent local peer class is changed so LAN peers do not bypass unchoke-slot limits
-- A runtime guard aborts a torrent if libtorrent ever reports non-zero BitTorrent piece payload upload
+- **Release builds compile a patched libtorrent 2.1.1 in which `bt_peer_connection::write_piece()` no longer contains the code that queues BitTorrent PIECE payload bytes for transmission**
+- If that removed upload path is nevertheless entered, the patched libtorrent logs a build marker and disconnects the peer immediately
+- CI refuses to package a libtorrent module unless the compiled hard-disable marker is present
+- A runtime guard additionally aborts a torrent if libtorrent ever reports non-zero BitTorrent piece payload upload
 - As soon as all wanted files are complete, the torrent is paused, peers are disconnected, and it is removed from the session and GUI
 - Manual removal asks for confirmation and optionally deletes downloaded data
 - Optional automatic deletion of the original `.torrent` file after completion (enabled by default)
@@ -35,7 +38,23 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 - Custom Windows application / tray / executable icon
 - GitHub Actions builds a Windows release archive automatically
 
-> **Important:** "download only" here means zero intended **BitTorrent piece payload upload**. Normal networking still requires outbound protocol traffic such as tracker/DHT requests, BitTorrent handshakes, request messages and TCP acknowledgements. The app does not and cannot make total outbound network traffic equal to zero while downloading.
+> **Important:** "download only" here refers to BitTorrent **file piece payload**. Normal networking still requires outbound protocol/control traffic such as tracker/DHT requests, BitTorrent handshakes, request messages and TCP acknowledgements. The app does not and cannot make total outbound network traffic equal to zero while downloading.
+
+## Hard-disabled libtorrent build
+
+Official Windows builds do **not** use the stock PyPI `libtorrent` wheel. The build process:
+
+1. checks out upstream libtorrent `v2.1.1` (`56ae8caba38bf154ffc210403cb23f91d0ecaa49`),
+2. applies `patches/libtorrent-no-piece-upload.patch`,
+3. builds the Python binding from source,
+4. verifies the compiled module contains `DOWNLOAD_ONLY_TORRENT_PIECE_UPLOAD_DISABLED`,
+5. verifies the packaged `.pyd` contains the same marker before publishing.
+
+The patch removes the upstream code in `bt_peer_connection::write_piece()` that constructs a PIECE message and appends the requested disk buffer to the socket send queue. This is intentionally redundant with the zero-unchoke policy and runtime payload counter guard.
+
+Each release directory also contains `PATCHED_LIBTORRENT_BUILD.txt` with the upstream revision, patch hash, compiled libtorrent SHA-256, and application EXE SHA-256.
+
+This design provides strong technical evidence that the distributed binary was built without libtorrent's normal BitTorrent piece-payload send path. It is still not a claim that the application sends zero network bytes of every kind.
 
 ## Keyboard shortcuts
 
@@ -52,13 +71,18 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 
 - Windows 10/11 x64
 - Python 3.11 x64
+- Visual Studio C++ build tools
+- vcpkg (`VCPKG_ROOT` or `VCPKG_INSTALLATION_ROOT` set; GitHub-hosted Windows runners already provide it)
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+.\tools\build_patched_libtorrent.ps1 -Python python
 python app.py
 ```
+
+The supported source-mode instructions intentionally build the same hard-disabled libtorrent variant used by CI instead of installing the stock PyPI libtorrent wheel.
 
 ## Build locally
 
@@ -76,13 +100,13 @@ Keep the entire `dist\DownloadOnlyTorrent` directory together when distributing 
 
 ## Automatic Windows build
 
-`.github/workflows/windows-build.yml` runs on pull requests and pushes to `main`. It builds an onedir Windows application, includes the applicable license/source-offer files, smoke-tests the executable, then uploads a ZIP artifact for 14 days.
+`.github/workflows/windows-build.yml` runs on pull requests and pushes to `main`. It builds the patched libtorrent from source, verifies the hard-disable marker, builds an onedir Windows application, includes the applicable license/source-offer and build-provenance files, smoke-tests the executable, then uploads an artifact for 14 days.
 
-Pushing a tag beginning with `v` also creates a GitHub Release and attaches the ZIP:
+Pushing a tag beginning with `v` also creates or updates the corresponding GitHub Release and attaches one Windows ZIP:
 
 ```powershell
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 ## Download behavior
@@ -115,11 +139,13 @@ The application's own source code is released under the **MIT License**; see `LI
 The project uses third-party software under separate licenses, most notably:
 
 - PySide6 / Qt under LGPLv3/GPLv3/commercial licensing options; this project uses the Community Edition under LGPLv3 for the Qt libraries it distributes.
-- libtorrent under the BSD license and additional bundled notices.
+- a modified libtorrent 2.1.1 under its BSD license and bundled notices; the modification is provided as `patches/libtorrent-no-piece-upload.patch`.
+- Boost libraries used to build/link the custom libtorrent Python binding under the Boost Software License 1.0.
+- OpenSSL used by the custom libtorrent build for HTTPS tracker/SSL support under the license distributed with the exact vcpkg package used by CI.
 - Python under the Python Software Foundation license.
 - PyInstaller as the packaging tool under its license and executable-bundling exception.
 
-See `THIRD_PARTY_NOTICES.md`, `QT_LGPL_SOURCE_OFFER.md`, and `LICENSES/` for details. Release ZIPs include the GNU LGPLv3/GPLv3 texts, libtorrent notices, and the Python runtime license.
+See `THIRD_PARTY_NOTICES.md`, `QT_LGPL_SOURCE_OFFER.md`, and `LICENSES/` in release packages for details. Release packages include the Qt/PySide6 LGPL/GPL texts obtained from the installed pinned PySide6 distribution, libtorrent notices and patch, Boost/OpenSSL notices, and the Python runtime license.
 
 The onedir release format is intentional: Qt/PySide6 DLLs remain separate and may be replaced with compatible modified versions. Nothing in this project's license is intended to prohibit LGPL-permitted debugging, reverse engineering, relinking, or replacement of those libraries.
 
@@ -127,4 +153,4 @@ This repository can be operated publicly, but users remain responsible for copyr
 
 ## CI note
 
-The project pins `libtorrent==2.1.1`, `PySide6==6.9.2`, and Python 3.11 for the Windows workflow. CI performs syntax checks, builds the onedir GUI app, verifies the embedded Windows icon, copies legal notices/license texts, smoke-tests `--version`, and publishes a ZIP artifact.
+The project pins upstream libtorrent `v2.1.1`, Boost `1.91.0`, PySide6 `6.9.2`, and Python 3.11 for the Windows workflow. CI builds and verifies the patched libtorrent, performs syntax checks, builds the onedir GUI app, verifies the embedded Windows icon and packaged libtorrent marker, packages legal/provenance files, smoke-tests `--version`, and publishes the artifact.
