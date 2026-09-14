@@ -18,6 +18,7 @@ from download_only_torrent.runtime_fix import (
     apply_runtime_network_fix,
     refresh_discovery,
 )
+from download_only_torrent.sorting_ui import install_sorting_ui
 from download_only_torrent.ui import MainWindow, apply_theme
 from download_only_torrent.windows_integration import (
     create_single_instance_server,
@@ -89,6 +90,7 @@ def main() -> int:
     install_network_ui(window)
     install_debug_ui(window)
     install_controls_ui(window)
+    install_sorting_ui(window)
 
     # Keep this object referenced by the window for the application's lifetime.
     window._single_instance_server = create_single_instance_server(window)
