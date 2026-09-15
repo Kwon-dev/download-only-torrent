@@ -11,6 +11,10 @@ from download_only_torrent.app_icon import make_app_icon
 from download_only_torrent.config import AppConfig
 from download_only_torrent.controls_ui import install_controls_ui
 from download_only_torrent.debug_ui import install_debug_ui
+from download_only_torrent.desktop_experience import (
+    install_desktop_experience,
+    install_engine_concurrency_fix,
+)
 from download_only_torrent.engine import TorrentEngine
 from download_only_torrent.network_ui import install_network_ui
 from download_only_torrent.port_config import install_engine_listen_port
@@ -69,6 +73,11 @@ def main() -> int:
     # port instead of briefly attempting libtorrent's default 6881 port.
     install_engine_listen_port(TorrentEngine)
 
+    # Queue/checking limits must be disabled before TorrentEngine.__init__()
+    # restores saved torrents. Applying them afterwards is too late for torrents
+    # already placed into libtorrent's initial resume/checking queue.
+    install_engine_concurrency_fix(TorrentEngine)
+
     config = AppConfig.load()
     apply_theme(app, config.theme)
     engine = TorrentEngine(config)
@@ -88,6 +97,7 @@ def main() -> int:
     # Install extensions before controls so Ctrl+O points at the multi-file
     # torrent picker rather than the original single-file action.
     install_network_ui(window)
+    install_desktop_experience(window)
     install_debug_ui(window)
     install_controls_ui(window)
     install_sorting_ui(window)
