@@ -115,6 +115,12 @@ For `.torrent` input, file priorities are set before the torrent is added. For m
 
 BitTorrent operates on pieces rather than exact file byte ranges. If two files share a boundary piece, libtorrent may need to fetch the whole piece even when one neighboring file is unchecked. This is normal BitTorrent behavior.
 
+## Private trackers and community rules
+
+Many private trackers enforce upload-ratio, minimum-seeding or hit-and-run rules and may restrict which client implementations or versions are allowed. This client intentionally does not transmit BitTorrent file-piece payload and removes completed torrents instead of seeding them, so it cannot contribute normal upload ratio or post-download seed time.
+
+Do not use this client on a private tracker unless that tracker's rules explicitly permit this behavior and the client/version is allowed. This project is not intended to bypass tracker rules, ratio requirements, client whitelists, or other community policies.
+
 ## Completion behavior
 
 When all wanted data is finished, the app immediately:

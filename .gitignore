@@ -7,3 +7,13 @@ dist/
 *.spec
 .vscode/
 .idea/
+
+# Local environment / credentials
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from download_only_torrent import __version__
 from download_only_torrent.app_icon import make_app_icon
+from download_only_torrent.client_identity import install_engine_identity
 from download_only_torrent.config import AppConfig
 from download_only_torrent.controls_ui import install_controls_ui
 from download_only_torrent.debug_ui import install_debug_ui
@@ -77,6 +78,10 @@ def main() -> int:
     # restores saved torrents. Applying them afterwards is too late for torrents
     # already placed into libtorrent's initial resume/checking queue.
     install_engine_concurrency_fix(TorrentEngine)
+
+    # Identify this application explicitly to trackers and peers instead of
+    # inheriting libtorrent's default LT fingerprint.
+    install_engine_identity(TorrentEngine)
 
     config = AppConfig.load()
     apply_theme(app, config.theme)
