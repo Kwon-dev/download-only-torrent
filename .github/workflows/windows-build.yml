@@ -7,8 +7,10 @@ on:
     branches: [main]
     tags: ['v*']
 
+# Build and PR jobs only need repository read access. The tagged-release job
+# below is the only job allowed to write release assets back to the repository.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -124,10 +126,20 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # GitHub Releases do not automatically wrap folders, so create exactly one
-      # archive only for tagged releases.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: DownloadOnlyTorrent-windows-x64-r${{ github.run_number }}
+          path: dist/DownloadOnlyTorrent
+
       - name: Create release archive
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
           $zip = ".\dist\DownloadOnlyTorrent-windows-x64-r${{ github.run_number }}.zip"
@@ -135,7 +147,6 @@ jobs:
           Write-Host "Built: $zip"
 
       - name: Publish tagged release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/DownloadOnlyTorrent-windows-x64-r${{ github.run_number }}.zip
