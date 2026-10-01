@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import libtorrent as lt
 
 import app as app_module
@@ -48,13 +50,25 @@ def test_main_window_diagnostics_and_status_bar(qapp, tmp_path, seeder):
     window = app_module.build_main_window(qapp)
     engine = window.engine
     task_id = engine.add_torrent_file(str(path), str(tmp_path / "dl"), [0])
-    engine.tasks[task_id].handle.connect_peer(seeder.endpoint)
-    spin_qt(3000)
+    handle = engine.tasks[task_id].handle
+    handle.connect_peer(seeder.endpoint)
+
+    # Wait for the real condition (seed connected and unchoking us) rather
+    # than a fixed delay; slower CI runners take longer to get there.
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        spin_qt(100)
+        peers = handle.get_peer_info()
+        if any(
+            p.flags & lt.peer_info.seed and not p.flags & lt.peer_info.remote_choked
+            for p in peers
+        ):
+            break
 
     text = debug_ui.torrent_diagnostics(window, task_id)
-    assert "[Peers]" in text
-    assert f"127.0.0.1:{seeder.endpoint[1]}" in text
-    assert "seeds 1 (choking us 0)" in text
+    peers_section = text[text.index("[Peers]") : text.index("[Peer disconnect")]
+    assert f"127.0.0.1:{seeder.endpoint[1]}" in peers_section, peers_section
+    assert "seeds 1 (choking us 0)" in peers_section, peers_section
     assert "saved_torrent_copy:" in text
 
     session_text = debug_ui.session_diagnostics(window)
