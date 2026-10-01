@@ -42,6 +42,12 @@ class AppConfig:
     language_user_selected: bool = False
     add_extra_trackers: bool = True
     extra_trackers: str = DEFAULT_EXTRA_TRACKERS
+    # Block requests kept outstanding per peer (16 KiB each). libtorrent's
+    # default of 500 (8 MiB) caps fast, high-latency peers.
+    max_out_request_queue: int = 1500
+    # Seconds to wait for an outgoing connection. Most unreachable candidates
+    # (peers behind NAT) only time out; libtorrent waits 15 s by default.
+    peer_connect_timeout: int = 7
 
     def extra_tracker_urls(self) -> list[str]:
         if not self.add_extra_trackers:
@@ -100,6 +106,12 @@ class AppConfig:
             extra_trackers=str(
                 settings.value("network/extra_trackers", DEFAULT_EXTRA_TRACKERS)
             ),
+            max_out_request_queue=_as_int(
+                settings.value("network/max_out_request_queue", 1500), 1500
+            ),
+            peer_connect_timeout=_as_int(
+                settings.value("network/peer_connect_timeout", 7), 7
+            ),
         )
 
     def save(self) -> None:
@@ -128,8 +140,17 @@ class AppConfig:
         )
         settings.setValue("network/add_extra_trackers", self.add_extra_trackers)
         settings.setValue("network/extra_trackers", self.extra_trackers)
+        settings.setValue("network/max_out_request_queue", self.max_out_request_queue)
+        settings.setValue("network/peer_connect_timeout", self.peer_connect_timeout)
         settings.sync()
         _set_windows_startup(self.start_with_windows)
+
+
+def _as_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _as_bool(value: object) -> bool:

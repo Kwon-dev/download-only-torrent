@@ -39,6 +39,13 @@ def seeder_preference_enabled() -> bool:
     return setting_bool(SEEDER_PREFERENCE_KEY)
 
 
+def set_options(large_pool: bool, prefer_seeders: bool) -> None:
+    settings = QSettings()
+    settings.setValue(LARGE_PEER_POOL_KEY, bool(large_pool))
+    settings.setValue(SEEDER_PREFERENCE_KEY, bool(prefer_seeders))
+    settings.sync()
+
+
 def turnover_profile(large_pool: bool, prefer_seeders: bool) -> tuple[int, int, int]:
     """Pick how aggressively libtorrent rotates peers out of a full pool.
 

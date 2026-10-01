@@ -49,6 +49,8 @@ def test_main_window_diagnostics_and_status_bar(qapp, tmp_path, seeder):
 
     window = app_module.build_main_window(qapp)
     engine = window.engine
+    # Only the local seeder may connect; the test must stay off the public DHT.
+    assert engine.session.get_settings()["enable_dht"] is False
     task_id = engine.add_torrent_file(str(path), str(tmp_path / "dl"), [0])
     handle = engine.tasks[task_id].handle
     handle.connect_peer(seeder.endpoint)
@@ -114,3 +116,63 @@ def test_seeder_preference_redials_dropped_outgoing_seeds(qapp, monkeypatch):
     monkeypatch.setattr(desktop_experience.time, "monotonic", lambda: clock() + 61)
     window._seeder_preference_timer.timeout.emit()
     assert handle.dialed == [("1.1.1.1", 6881)]
+
+
+def _form_widgets(form) -> list:
+    widgets = []
+    for row in range(form.rowCount()):
+        for role in (
+            ui.QFormLayout.ItemRole.LabelRole,
+            ui.QFormLayout.ItemRole.FieldRole,
+            ui.QFormLayout.ItemRole.SpanningRole,
+        ):
+            item = form.itemAt(row, role)
+            if item is not None and item.widget() is not None:
+                widgets.append(item.widget())
+    return widgets
+
+
+def test_settings_dialog_splits_general_and_advanced(qapp):
+    from PySide6.QtCore import QSettings
+
+    from download_only_torrent import peer_strategy, port_config
+
+    window = app_module.build_main_window(qapp)
+    window.timer.stop()
+    dialog = ui.SettingsDialog(window.config, window)
+    assert dialog.tabs.count() == 2
+
+    general = _form_widgets(dialog.general_form)
+    advanced = _form_widgets(dialog.advanced_form)
+    for widget in (dialog.download_dir.parent(), dialog.max_connections, dialog.theme):
+        assert widget in general
+    assert dialog.listen_port.parent() in general
+    for widget in (
+        dialog.large_peer_pool,
+        dialog.seeder_preference,
+        dialog.bind_default_interface,
+        dialog.dht,
+        dialog.utp,
+        dialog.max_out_request_queue,
+        dialog.peer_connect_timeout,
+        dialog.add_extra_trackers,
+        dialog.extra_trackers,
+    ):
+        assert widget in advanced
+        assert widget not in general
+
+    dialog.large_peer_pool.setChecked(True)
+    dialog.seeder_preference.setChecked(True)
+    dialog.bind_default_interface.setChecked(False)
+    dialog.max_out_request_queue.setValue(2000)
+    dialog.peer_connect_timeout.setValue(5)
+    dialog.apply()
+    window.engine.apply_config(window.config)
+
+    assert peer_strategy.large_pool_enabled() and peer_strategy.seeder_preference_enabled()
+    assert port_config.bind_default_interface_enabled() is False
+    assert QSettings().value("network/max_out_request_queue") in (2000, "2000")
+    applied = window.engine.session.get_settings()
+    assert applied["max_out_request_queue"] == 2000
+    assert applied["peer_connect_timeout"] == 5
+    assert applied["peer_turnover"] == 15

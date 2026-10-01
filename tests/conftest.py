@@ -44,10 +44,13 @@ def isolated_home(qapp, tmp_path, monkeypatch):
         QSettings.setPath(fmt, QSettings.Scope.UserScope, str(settings_dir))
     settings = QSettings()
     settings.clear()
-    # Deterministic networking: listen on all interfaces, no extra trackers
-    # unless a test turns them on.
+    # Deterministic, offline networking: listen on all interfaces, and no
+    # DHT, LSD or extra trackers unless a test turns them on. With DHT on, a
+    # test torrent's info-hash reaches the public DHT and strangers connect.
     settings.setValue("network/bind_default_interface", False)
     settings.setValue("network/add_extra_trackers", False)
+    settings.setValue("network/dht", False)
+    settings.setValue("network/lsd", False)
     settings.sync()
     return home
 
@@ -69,6 +72,8 @@ def read_session(home: Path) -> list[dict]:
 def make_config(download_dir: Path, **overrides) -> AppConfig:
     config = AppConfig(download_dir=str(download_dir))
     config.add_extra_trackers = False
+    config.enable_dht = False
+    config.enable_lsd = False
     for key, value in overrides.items():
         setattr(config, key, value)
     return config
