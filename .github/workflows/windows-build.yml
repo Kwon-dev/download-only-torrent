@@ -6,6 +6,12 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  # GitHub evicts caches that go unused for 7 days, which turns the next build
+  # into a ~25 minute libtorrent compile. A periodic run on main restores the
+  # wheel cache (refreshing it) or, if it was already evicted, rebuilds and
+  # saves it so PR and tag builds that follow stay fast.
+  schedule:
+    - cron: '23 3 */4 * *'
 
 # Build and PR jobs only need repository read access. The tagged-release job
 # below is the only job allowed to write release assets back to the repository.

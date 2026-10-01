@@ -96,6 +96,17 @@ def _final_resume_flags():
 
 _RESUME_SAVE_INTERVAL_SECONDS = 60.0
 
+# Restored torrents without resume data must hash everything already on disk.
+# They are not auto-managed, so libtorrent's active_checking limit does not
+# apply and they would all read at once; on a hard disk that seeks constantly.
+# Check them one at a time instead; hashing_threads keeps that one fast.
+_MAX_CONCURRENT_CHECKS = 1
+_CHECKING_STATES = ("CHECKING FILES", "CHECKING RESUME DATA")
+
+
+def _hashing_threads() -> int:
+    return max(2, min(8, (os.cpu_count() or 2) // 2))
+
 
 @dataclass(slots=True)
 class TaskSnapshot:
@@ -136,6 +147,9 @@ class TorrentEngine:
         self.unrestored: list[dict[str, object]] = []
         self._alert_listeners: list = []
         self._last_resume_save = time.monotonic()
+        # Task ids waiting for a full check, and the ones currently checking.
+        self.check_queue: list[str] = []
+        self._checking: set[str] = set()
         self._ensure_resume_alerts()
         self._configure_local_peer_class()
         self._restore_tasks()
@@ -149,6 +163,10 @@ class TorrentEngine:
             "enable_incoming_utp": self.config.enable_utp,
             "enable_outgoing_utp": self.config.enable_utp,
             "connections_limit": max(2, self.config.max_connections),
+            # Faster full checks: hash on several threads (default 1) and keep
+            # 16 MiB of reads outstanding instead of 4 MiB.
+            "hashing_threads": _hashing_threads(),
+            "checking_mem_usage": 1024,
             "choking_algorithm": 0,
             "unchoke_slots_limit": 0,
             # BEP 6 "allowed fast" lets peers request a few pieces while we keep
@@ -285,6 +303,7 @@ class TorrentEngine:
         magnet_uri: str | None = None,
         resume=None,
         persist: bool = True,
+        queue_check: bool = False,
     ) -> str:
         files = self._files_from_info(ti)
         selected = self._normalize_selection(selected_files, len(files))
@@ -296,12 +315,17 @@ class TorrentEngine:
             4 if i in selected else 0 for i in range(len(files))
         ]
         params.flags &= ~lt.torrent_flags.auto_managed
-        params.flags &= ~lt.torrent_flags.paused
+        if queue_check:
+            # A paused torrent does not start checking until it is resumed.
+            params.flags |= lt.torrent_flags.paused
+        else:
+            params.flags &= ~lt.torrent_flags.paused
         params = self._apply_param_feature_flags(params)
         handle = self.session.add_torrent(params)
         self._apply_feature_flags(handle)
-        handle.resume()
-        self._kick_discovery(handle)
+        if not queue_check:
+            handle.resume()
+            self._kick_discovery(handle)
         task_id = self._register_task(
             handle,
             ti.name(),
@@ -311,6 +335,8 @@ class TorrentEngine:
             source_torrent_path,
             magnet_uri=magnet_uri,
         )
+        if queue_check:
+            self.check_queue.append(task_id)
         if persist:
             self._persist_tasks()
         return task_id
@@ -324,6 +350,9 @@ class TorrentEngine:
 
     def resume(self, task_id: str) -> None:
         task = self.tasks[task_id]
+        # Resuming by hand starts the check right away instead of waiting.
+        if task_id in self.check_queue:
+            self.check_queue.remove(task_id)
         task.handle.resume()
         task.paused = False
         self._kick_discovery(task.handle)
@@ -337,6 +366,7 @@ class TorrentEngine:
         task = self.tasks.pop(task_id, None)
         if task is None:
             return
+        self.forget_check(task_id)
         self.discard_saved_state(task.key)
         try:
             task.handle.pause()
@@ -355,8 +385,43 @@ class TorrentEngine:
 
         self._alert_listeners.append(callback)
 
+    def forget_check(self, task_id: str) -> None:
+        if task_id in self.check_queue:
+            self.check_queue.remove(task_id)
+        self._checking.discard(task_id)
+
+    def _pump_check_queue(self) -> None:
+        for task_id in list(self._checking):
+            task = self.tasks.get(task_id)
+            if task is None or task.paused:
+                # Gone, or the user paused it and took over.
+                self._checking.discard(task_id)
+                continue
+            try:
+                state = self._state_name(task.handle.status())
+            except Exception:
+                self._checking.discard(task_id)
+                continue
+            if state not in _CHECKING_STATES:
+                self._checking.discard(task_id)
+                # Save right away so the next launch can skip this check.
+                self._request_resume_save(task.handle, _resume_flags())
+
+        while self.check_queue and len(self._checking) < _MAX_CONCURRENT_CHECKS:
+            task_id = self.check_queue.pop(0)
+            task = self.tasks.get(task_id)
+            if task is None or task.paused:
+                continue
+            try:
+                task.handle.resume()
+                self._kick_discovery(task.handle)
+            except Exception:
+                continue
+            self._checking.add(task_id)
+
     def poll(self) -> list[TaskSnapshot]:
         self._drain_alerts()
+        self._pump_check_queue()
         self._save_resume_periodically()
         self._process_restored_magnets()
         snapshots: list[TaskSnapshot] = []
@@ -423,6 +488,8 @@ class TorrentEngine:
                         int(getattr(status, "num_peers", 0)),
                         "PAUSED"
                         if task.paused
+                        else "QUEUED FOR CHECK"
+                        if task_id in self.check_queue
                         else self._state_name(status),
                         task.save_path,
                     )
@@ -476,6 +543,7 @@ class TorrentEngine:
         task = self.tasks.pop(task_id, None)
         if task is None:
             return
+        self.forget_check(task_id)
         self.discard_saved_state(task.key)
         try:
             task.handle.pause()
@@ -828,6 +896,7 @@ class TorrentEngine:
             source,
             resume=resume,
             persist=False,
+            queue_check=resume is None and not paused,
         )
         if paused:
             task = self.tasks[task_id]
