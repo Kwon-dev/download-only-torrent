@@ -21,7 +21,8 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 - DHT, PEX, LSD, TCP and uTP toggles
 - Active download/torrent queue limits disabled so the app does not impose an artificial simultaneous-download cap
 - Adjustable row height and persistent column widths
-- Active downloads are persisted and restored after app restart
+- Active downloads are persisted and restored after app restart, using libtorrent resume data so already-downloaded pieces are not re-hashed and magnet links do not need to fetch metadata again
+- A private copy of each added `.torrent` file is kept, so a download survives the original file being deleted (for example from a browser download cache); entries that still cannot be restored are kept and reported instead of being dropped
 - Progress, download speed, connected peers and piece-payload-upload counters
 - Diagnostic Properties window with tracker, DHT, listen-port and recent libtorrent alert information
 - Seeding is disabled by policy

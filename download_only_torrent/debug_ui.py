@@ -424,6 +424,14 @@ def _counter_lines(counts: Counter, limit: int = 15) -> list[str]:
     return [f"{count:>6}  {name}" for name, count in counts.most_common(limit)]
 
 
+def _saved_stamp(path) -> str:
+    try:
+        stamp = datetime.fromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return "none"
+    return f"{stamp:%Y-%m-%d %H:%M:%S}"
+
+
 def _log(window) -> DiagnosticsLog:
     log = getattr(window, "_diagnostics_log", None)
     if log is None:
@@ -457,6 +465,9 @@ def torrent_diagnostics(window, task_id: str) -> str:
     add(f"magnet: {task.magnet_uri or '-'}")
     add(f"selected_files: {', '.join(map(str, task.selected_files))}")
     add(f"app_paused: {task.paused}")
+    if task.key:
+        add(f"saved_resume_data: {_saved_stamp(engine.resume_path(task.key))}")
+        add(f"saved_torrent_copy: {_saved_stamp(engine.torrent_copy_path(task.key))}")
     add("")
 
     add("[Torrent status]")
@@ -612,6 +623,11 @@ def session_diagnostics(window) -> str:
 
     add("[Totals]")
     add(f"torrents: {len(engine.tasks)} (+{len(engine.pending_magnets)} waiting for metadata)")
+    unrestored = getattr(engine, "unrestored", [])
+    if unrestored:
+        add(f"not restored from session.json: {len(unrestored)}")
+        for entry in unrestored:
+            add(f"  - {entry.get('source', '?')}")
     add(f"download (payload): {format_rate(total_rate)}")
     add(_format_peer_summary(_peer_summary(all_peers)))
     add("")
@@ -735,21 +751,16 @@ def _install_alert_capture(window) -> None:
     except Exception:
         pass
 
-    def collect_alerts() -> None:
-        try:
-            alerts = window.engine.session.pop_alerts()
-        except Exception:
-            return
+    def collect_alerts(alerts) -> None:
         for alert in alerts:
             try:
                 log.add(alert)
             except Exception:
                 continue
 
-    window._torrent_alert_timer = QTimer(window)
-    window._torrent_alert_timer.setInterval(500)
-    window._torrent_alert_timer.timeout.connect(collect_alerts)
-    window._torrent_alert_timer.start()
+    # The engine pops alerts on every poll (it needs the resume-data replies)
+    # and hands each batch to its listeners.
+    window.engine.add_alert_listener(collect_alerts)
 
 
 def _install_diagnostics_action(window) -> None:

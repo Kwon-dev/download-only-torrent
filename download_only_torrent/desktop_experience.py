@@ -5,7 +5,13 @@ from pathlib import Path
 
 import libtorrent as lt
 from PySide6.QtCore import QEvent, QObject, QSettings, QTimer
-from PySide6.QtWidgets import QApplication, QCheckBox, QFormLayout, QLabel
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QFormLayout,
+    QLabel,
+    QMessageBox,
+)
 
 from .network_ui import _show_one_torrent_dialog
 from .ui import SettingsDialog, TEXT
@@ -540,6 +546,46 @@ def _install_tray_quit(window) -> None:
     window.tray_quit.triggered.connect(quit_from_tray)
 
 
+def _warn_unrestored(window) -> None:
+    entries = list(getattr(window.engine, "unrestored", []))
+    if not entries:
+        return
+    sources = "\n".join(f"- {entry.get('source', '?')}" for entry in entries[:20])
+    if len(entries) > 20:
+        sources += f"\n... (+{len(entries) - 20})"
+    if window.config.language == "ko":
+        title = "일부 다운로드를 복원하지 못함"
+        text = (
+            f"저장된 다운로드 {len(entries)}개를 복원하지 못했습니다. "
+            "원본 .torrent 파일이 없어진 경우가 대부분입니다.\n\n"
+            f"{sources}\n\n"
+            "항목을 유지하면, 같은 경로에 파일을 되돌려 놓고 앱을 다시 "
+            "시작했을 때 복원됩니다."
+        )
+        keep_text, drop_text = "유지", "목록에서 삭제"
+    else:
+        title = "Some downloads could not be restored"
+        text = (
+            f"{len(entries)} saved download(s) could not be restored, usually "
+            "because the original .torrent file is gone.\n\n"
+            f"{sources}\n\n"
+            "If you keep them, putting the file back at the same path and "
+            "restarting the app restores them."
+        )
+        keep_text, drop_text = "Keep", "Remove from list"
+
+    box = QMessageBox(window)
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.addButton(keep_text, QMessageBox.ButtonRole.AcceptRole)
+    drop = box.addButton(drop_text, QMessageBox.ButtonRole.DestructiveRole)
+    box.exec()
+    if box.clickedButton() is drop:
+        window.engine.unrestored.clear()
+        window.engine._persist_tasks()
+
+
 def install_desktop_experience(window) -> None:
     """Install drag/drop, tray behavior, peer options, and a live status bar."""
 
@@ -549,3 +595,4 @@ def install_desktop_experience(window) -> None:
     _install_seeder_preference(window)
     _install_status_bar(window)
     _install_tray_quit(window)
+    QTimer.singleShot(0, lambda: _warn_unrestored(window))

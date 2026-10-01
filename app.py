@@ -87,6 +87,8 @@ def main() -> int:
     apply_theme(app, config.theme)
     engine = TorrentEngine(config)
     apply_runtime_network_fix(engine)
+    # Save resume data so the next launch skips re-hashing every download.
+    app.aboutToQuit.connect(engine.save_all_resume_data)
 
     # Re-announce once more after libtorrent has had time to create its listen
     # socket on the selected port.

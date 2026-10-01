@@ -120,6 +120,7 @@ def _remove_task(window, task_id: str, delete_data: bool) -> tuple[bool, str | N
         return False, f"{task.name}: {exc}"
 
     engine.tasks.pop(task_id, None)
+    engine.discard_saved_state(task.key)
     window._remove_row(task_id)
     return True, None
 
