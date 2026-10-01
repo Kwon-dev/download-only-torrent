@@ -176,3 +176,80 @@ def test_settings_dialog_splits_general_and_advanced(qapp):
     assert applied["max_out_request_queue"] == 2000
     assert applied["peer_connect_timeout"] == 5
     assert applied["peer_turnover"] == 15
+
+
+def test_peer_panel_lists_peers_of_selected_download(qapp, tmp_path, seeder):
+    from download_only_torrent import peer_panel
+
+    content, torrent = make_torrent(tmp_path / "seed", "panel.bin", 4 * 1024 * 1024)
+    seeder.seed(content, torrent)
+    path = tmp_path / "panel.torrent"
+    path.write_bytes(torrent)
+
+    window = app_module.build_main_window(qapp)
+    window.config.language = "en"
+    window.show()
+    panel = window._peer_panel
+    assert window.centralWidget() is window._peer_splitter
+    assert window._peer_splitter.widget(0) is window.table
+
+    # Nothing selected yet.
+    panel.refresh()
+    assert panel.table.rowCount() == 0
+
+    task_id = window.engine.add_torrent_file(str(path), str(tmp_path / "dl"), [0])
+    window.engine.tasks[task_id].handle.connect_peer(seeder.endpoint)
+
+    address = f"127.0.0.1:{seeder.endpoint[1]}"
+    deadline = time.monotonic() + 20
+    rows = {}
+    while time.monotonic() < deadline:
+        spin_qt(200)
+        row = window.rows.get(task_id)
+        if row is not None:
+            window.table.selectRow(row)
+        panel.refresh()
+        rows = {
+            panel.table.item(r, 0).text(): [
+                panel.table.item(r, c).text() for c in range(panel.table.columnCount())
+            ]
+            for r in range(panel.table.rowCount())
+        }
+        if address in rows and rows[address][2] == "Receiving":
+            break
+
+    assert address in rows, rows
+    cells = rows[address]
+    assert cells[1].startswith("libtorrent")
+    assert cells[2] == "Receiving"
+    assert cells[3].startswith("S")
+    assert cells[4] == "100.0%"
+    assert "seeds 1, 0 choking us" in panel.summary.text()
+
+    # Numeric columns sort by value, not text.
+    small = peer_panel._SortItem("9.0 KiB/s", 9 * 1024)
+    large = peer_panel._SortItem("10.0 MiB/s", 10 * 1024 * 1024)
+    assert small < large
+    window.timer.stop()
+    window.hide()
+
+
+def test_rate_meter_and_status_bar_show_average_and_connecting(qapp, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(desktop_experience.time, "monotonic", lambda: clock[0])
+    meter = desktop_experience.RateMeter()
+    meter.sample(0)
+    clock[0] += 10
+    meter.sample(1000)  # 1000 B/s for 10 s
+    clock[0] += 10
+    meter.sample(0)
+    assert meter.total_bytes == 10_000
+    assert meter.average == 500
+
+    monkeypatch.undo()
+    window = app_module.build_main_window(qapp)
+    window.config.language = "ko"
+    window.timer.stop()
+    spin_qt(700)
+    text = window._status_summary_label.text()
+    assert "평균" in text and "연결 시도" in text

@@ -316,11 +316,41 @@ def _port_status(window, language: str) -> str:
     return f"포트 {port} 확인 중" if language == "ko" else f"Port {port} checking"
 
 
+class RateMeter:
+    """Average download payload rate since the app started.
+
+    Integrates the sampled total rate, so torrents that finish and leave the
+    session still count toward the average.
+    """
+
+    def __init__(self):
+        self.started = time.monotonic()
+        self.total_bytes = 0.0
+        self._last_sample: float | None = None
+
+    def sample(self, rate: int) -> None:
+        now = time.monotonic()
+        if self._last_sample is not None:
+            self.total_bytes += max(0, rate) * (now - self._last_sample)
+        self._last_sample = now
+
+    @property
+    def elapsed(self) -> float:
+        return max(0.0, time.monotonic() - self.started)
+
+    @property
+    def average(self) -> float:
+        elapsed = self.elapsed
+        return self.total_bytes / elapsed if elapsed > 0 else 0.0
+
+
 def _install_status_bar(window) -> None:
     status = window.statusBar()
     status.setSizeGripEnabled(False)
     label = QLabel(window)
     status.addWidget(label, 1)
+    meter = RateMeter()
+    window._rate_meter = meter
 
     def update_status() -> None:
         active = 0
@@ -328,6 +358,7 @@ def _install_status_bar(window) -> None:
         paused = 0
         peers = 0
         seeders = 0
+        half_open = 0
         total_rate = 0
 
         tasks = list(window.engine.tasks.values())
@@ -342,6 +373,12 @@ def _install_status_bar(window) -> None:
             )
             peers += int(getattr(torrent_status, "num_peers", 0))
             seeders += max(0, int(getattr(torrent_status, "num_seeds", 0)))
+            # num_connections includes connections still being set up.
+            half_open += max(
+                0,
+                int(getattr(torrent_status, "num_connections", 0))
+                - int(getattr(torrent_status, "num_peers", 0)),
+            )
 
             if bool(getattr(task, "paused", False)):
                 paused += 1
@@ -356,12 +393,14 @@ def _install_status_bar(window) -> None:
         pending = len(window.engine.pending_magnets)
         checking_or_waiting += pending
         total = len(tasks) + pending
+        meter.sample(total_rate)
+        average = format_rate(int(meter.average))
 
         if window.config.language == "ko":
             text = (
                 f"활성 다운로드 {active}/{total}   |   "
-                f"합계 다운로드 {format_rate(total_rate)}   |   "
-                f"피어 {peers} (시더 {seeders})   |   "
+                f"합계 다운로드 {format_rate(total_rate)} (평균 {average})   |   "
+                f"피어 {peers} (시더 {seeders}, 연결 시도 {half_open})   |   "
                 f"검사/대기 {checking_or_waiting}"
             )
             if paused:
@@ -374,8 +413,8 @@ def _install_status_bar(window) -> None:
         else:
             text = (
                 f"Active downloads {active}/{total}   |   "
-                f"Total down {format_rate(total_rate)}   |   "
-                f"Peers {peers} (seeds {seeders})   |   "
+                f"Total down {format_rate(total_rate)} (avg {average})   |   "
+                f"Peers {peers} (seeds {seeders}, connecting {half_open})   |   "
                 f"Checking/waiting {checking_or_waiting}"
             )
             if paused:
