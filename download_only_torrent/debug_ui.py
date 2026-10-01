@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from . import ui
+from . import port_config, ui
 from .utils import format_bytes, format_rate
 
 
@@ -64,7 +64,35 @@ _COUNTED_ONLY = {
     "dht_reply",
     "block_timeout",
     "unwanted_block",
+    # Every downloading torrent saves once a minute.
+    "save_resume_data",
 }
+
+# Who ended a peer connection, grouped from the error and the failed operation.
+_LT_TIMED_OUT_NO_HANDSHAKE = 51
+_LT_OPTIMISTIC_DISCONNECT = 97
+# WSAETIMEDOUT on Windows, ETIMEDOUT on Linux and macOS.
+_SOCKET_TIMEOUTS = {10060, 110, 60}
+_DIAL_OPERATIONS = {
+    "connect",
+    "sock_open",
+    "sock_bind",
+    "sock_bind_to_device",
+    "sock_option",
+    "getpeername",
+    "getname",
+    "get_interface",
+    "hostname_lookup",
+}
+_SOCKET_OPERATIONS = {"sock_read", "sock_write", "ssl_handshake", "encryption"}
+DISCONNECT_CAUSES = (
+    ("remote", "closed by the remote peer"),
+    ("dial", "dial failed (no answer, refused, timed out, unsupported)"),
+    ("handshake", "connected but no BitTorrent handshake"),
+    ("silent", "connection went silent (socket timeout)"),
+    ("local", "closed by us (timeouts, bans, duplicates, policy)"),
+    ("turnover", "dropped by our peer turnover (optimistic disconnect)"),
+)
 
 # libtorrent's peer_source_flags_t::incoming has no Python attribute.
 _SOURCE_INCOMING = 0x20
@@ -155,6 +183,33 @@ def _error_text(value: int, category: str) -> str:
         except Exception:
             pass
     return f"{category}:{value}"
+
+
+def disconnect_cause(category: str, value: int, operation: str) -> str:
+    """Group a peer_disconnected alert by who ended the connection."""
+
+    value = int(value)
+    if category == "libtorrent" and value == _LT_OPTIMISTIC_DISCONNECT:
+        return "turnover"
+    if operation in _DIAL_OPERATIONS:
+        return "dial"
+    if category == "libtorrent" and value == _LT_TIMED_OUT_NO_HANDSHAKE:
+        return "handshake"
+    if operation in _SOCKET_OPERATIONS:
+        if category == "system" and value in _SOCKET_TIMEOUTS:
+            return "silent"
+        return "remote"
+    return "local"
+
+
+def _cause_lines(counts: Counter) -> list[str]:
+    total = sum(counts.values())
+    lines = []
+    for cause, label in DISCONNECT_CAUSES:
+        count = counts.get(cause, 0)
+        share = count * 100 / total if total else 0.0
+        lines.append(f"{count:>7}  {share:5.1f}%  {label}")
+    return lines
 
 
 def _has_flag(flags, flag) -> bool:
@@ -356,6 +411,7 @@ class DiagnosticsLog:
             maxlen=_LOG_LIMIT
         )
         self.disconnects: dict[str | None, Counter] = {}
+        self.disconnect_causes: dict[str | None, Counter] = {}
         self.events: dict[str | None, Counter] = {}
         self.port_mappings: dict[str, str] = {}
         self.port_mapped = False
@@ -370,6 +426,9 @@ class DiagnosticsLog:
         if what == "peer_disconnected":
             self.disconnects.setdefault(key, Counter())[
                 self._disconnect_reason(alert)
+            ] += 1
+            self.disconnect_causes.setdefault(key, Counter())[
+                self._disconnect_cause(alert)
             ] += 1
             return
 
@@ -398,6 +457,13 @@ class DiagnosticsLog:
         operation = _safe(lambda: lt.operation_name(alert.op), "")
         return f"{reason} [{operation}]" if operation else str(reason)
 
+    @staticmethod
+    def _disconnect_cause(alert) -> str:
+        category = str(_safe(lambda: alert.error.category().name(), ""))
+        value = int(_safe(lambda: alert.error.value(), 0))
+        operation = str(_safe(lambda: lt.operation_name(alert.op), ""))
+        return disconnect_cause(category, value, operation)
+
     def lines(self, key: str | None, limit: int) -> list[str]:
         if key is None:
             selected = list(self.entries)
@@ -415,7 +481,7 @@ class DiagnosticsLog:
         return result
 
 
-def _counter_lines(counts: Counter, limit: int = 15) -> list[str]:
+def _counter_lines(counts: Counter, limit: int = 20) -> list[str]:
     if not counts:
         return ["(none yet)"]
     return [f"{count:>6}  {name}" for name, count in counts.most_common(limit)]
@@ -516,7 +582,11 @@ def torrent_diagnostics(window, task_id: str) -> str:
     lines.extend(_peer_lines(peers))
     add("")
 
-    add(f"[Peer disconnect reasons since {log.started:%H:%M:%S}]")
+    add(f"[Peer disconnects by cause since {log.started:%H:%M:%S}]")
+    lines.extend(_cause_lines(log.disconnect_causes.get(key, Counter())))
+    add("")
+
+    add("[Peer disconnect reasons]")
     lines.extend(_counter_lines(log.disconnects.get(key, Counter())))
     add("")
 
@@ -551,6 +621,10 @@ def session_diagnostics(window) -> str:
     add(f"captured since: {log.started:%Y-%m-%d %H:%M:%S}")
     add(f"is_listening: {_safe(lambda: session.is_listening())}")
     add(f"listen_port: {_safe(lambda: session.listen_port())}")
+    ipv4, ipv6 = _safe(port_config.default_route_addresses, (None, None))
+    add(f"default_route_ipv4: {ipv4 or 'none'}")
+    add(f"default_route_ipv6: {ipv6 or 'none (router/ISP not providing IPv6)'}")
+    add(f"ipv6_enabled: {port_config.ipv6_enabled()}")
     settings = _safe(lambda: session.get_settings(), {})
     if isinstance(settings, dict):
         for name in (
@@ -628,10 +702,11 @@ def session_diagnostics(window) -> str:
     add(f"download (payload): {format_rate(total_rate)}")
     meter = getattr(window, "_rate_meter", None)
     if meter is not None:
-        minutes = int(meter.elapsed // 60)
         add(
-            f"average since start: {format_rate(int(meter.average))} "
-            f"over {minutes} min ({format_bytes(int(meter.total_bytes))})"
+            f"average while downloading: {format_rate(int(meter.average))} "
+            f"over {_fmt_duration(meter.active_seconds)} "
+            f"({format_bytes(int(meter.total_bytes))}; "
+            f"app running {_fmt_duration(meter.elapsed)})"
         )
     add(_format_peer_summary(_peer_summary(all_peers)))
     add("")
@@ -642,6 +717,10 @@ def session_diagnostics(window) -> str:
         f"{'s-choke':>7} {'sending':>7} {'cands':>6} {'done':>7}"
     )
     lines.extend(rows or ["(none)"])
+    add("")
+
+    add("[Peer disconnects by cause, all torrents]")
+    lines.extend(_cause_lines(log.total(log.disconnect_causes)))
     add("")
 
     add("[Peer disconnect reasons, all torrents]")

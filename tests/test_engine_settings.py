@@ -34,9 +34,9 @@ def test_session_enforces_download_only_policy(tmp_path):
     "large_pool, prefer_seeders, expected_turnover, expected_limit",
     [
         (False, False, (4, 90, 300), 200),
-        (True, False, (10, 80, 60), 1000),
-        (False, True, (10, 80, 90), 200),
-        (True, True, (15, 75, 45), 1000),
+        (True, False, (5, 90, 120), 1000),
+        (False, True, (5, 90, 150), 200),
+        (True, True, (5, 90, 120), 1000),
     ],
 )
 def test_peer_strategy_profiles(
@@ -99,3 +99,13 @@ def test_advanced_network_values_are_applied(tmp_path):
         assert engine.session.get_settings()["max_out_request_queue"] == 800
     finally:
         close_engine(engine)
+
+
+def test_ipv6_can_be_turned_off():
+    QSettings().setValue("network/bind_default_interface", True)
+    port_config.set_ipv6_enabled(False)
+    assert listen_interfaces(4000, ("10.0.0.2", "2001:db8::5")) == "10.0.0.2:4000"
+    QSettings().setValue("network/bind_default_interface", False)
+    assert listen_interfaces(4000, ("10.0.0.2", "2001:db8::5")) == "0.0.0.0:4000"
+    port_config.set_ipv6_enabled(True)
+    assert listen_interfaces(4000, ("10.0.0.2", None)) == "0.0.0.0:4000,[::]:4000"

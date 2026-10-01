@@ -13,12 +13,15 @@ _LARGE_POOL_NUM_WANT = 500
 _LARGE_POOL_MAX_PEX_PEERS = 200
 
 # Peer turnover (percent of peers dropped, pool fill cutoff percent, interval
-# seconds). libtorrent drops uninteresting peers first, then non-seeds, then the
-# slowest senders, and only when it has new candidates to replace them with.
+# seconds). It only runs once a pool is nearly full and only when there are new
+# candidates to replace the dropped peers with. The patched libtorrent never
+# drops a peer in its first two minutes or while it is sending to us, so a new
+# connection gets time to ramp up; the rates stay low so turnover does not
+# churn the pool faster than peers can prove themselves.
 _DEFAULT_TURNOVER = (4, 90, 300)
-_LARGE_POOL_TURNOVER = (10, 80, 60)
-_SEEDER_TURNOVER = (10, 80, 90)
-_LARGE_POOL_SEEDER_TURNOVER = (15, 75, 45)
+_LARGE_POOL_TURNOVER = (5, 90, 120)
+_SEEDER_TURNOVER = (5, 90, 150)
+_LARGE_POOL_SEEDER_TURNOVER = (5, 90, 120)
 
 
 def as_bool(value: object) -> bool:

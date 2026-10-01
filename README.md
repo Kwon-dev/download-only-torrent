@@ -20,7 +20,7 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 - Settings split into General and Advanced tabs; Advanced holds the peer strategies, interface binding, DHT/PEX/LSD/TCP/uTP, outstanding requests per peer (default 1500; libtorrent's is 500), peer connect timeout (default 7 s; libtorrent's is 15 s) and the extra tracker list
 - Configurable listen port; first launch automatically chooses a currently unused TCP/UDP port
 - Listens and announces only on the default-route address (not on VPN, Hyper-V/WSL or loopback adapters), following network changes; can be switched back to all interfaces
-- Status bar shows whether the listen port is reachable (incoming connections, UPnP/NAT-PMP mapping), the average download rate since start and how many peer connections are still being set up
+- Status bar shows whether the listen port is reachable (incoming connections, UPnP/NAT-PMP mapping), the average download rate while something was downloading (idle time is left out) and how many peer connections are still being set up
 - Peer pane under the download list (like µTorrent's): every peer of the selected download with client, status (receiving / choking us / unchoked but idle / connecting), flags, progress, download speed, amount received and discovery source; sortable, resizable, remembered between launches
 - Optional extra public trackers added to every non-private torrent (editable list, on by default; never added to private torrents)
 - DHT, PEX, LSD, TCP and uTP toggles
@@ -29,7 +29,8 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 - Active downloads are persisted and restored after app restart, using libtorrent resume data so already-downloaded pieces are not re-hashed and magnet links do not need to fetch metadata again
 - A private copy of each added `.torrent` file is kept, so a download survives the original file being deleted (for example from a browser download cache); entries that still cannot be restored are kept and reported instead of being dropped
 - Progress, download speed, connected peers and piece-payload-upload counters
-- Diagnostic Properties window per torrent (peer list with seed/choke flags, disconnect reasons, tracker status, alerts) and a session-wide Diagnostics window (`Ctrl+D`)
+- Diagnostic Properties window per torrent (peer list with seed/choke flags, disconnects grouped by who ended them plus the raw reasons, tracker status, alerts) and a session-wide Diagnostics window (`Ctrl+D`) that also shows the default-route IPv4/IPv6 addresses
+- IPv6 (Advanced settings, on by default): listens, announces and connects over IPv6 when the router and internet provider provide it
 - Restored downloads without resume data are checked one at a time instead of all at once, with multi-threaded hashing
 - Seeding is disabled by policy
 - Session unchoke slots are set to `0`
@@ -37,6 +38,7 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 - The libtorrent local peer class is changed so LAN peers do not bypass unchoke-slot limits
 - **Release builds compile a patched libtorrent 2.1.1 in which `bt_peer_connection::write_piece()` no longer contains the code that queues BitTorrent PIECE payload bytes for transmission**
 - If that removed upload path is nevertheless entered, the patched libtorrent logs a build marker and disconnects the peer immediately
+- The release libtorrent is also patched so peer turnover never drops a peer we want pieces from in its first two minutes or while it is sending to us, and ranks the remaining peers by their current rate (upstream drops every non-seed before any seed, by lifetime average); turnover itself runs at most 5% of a nearly full pool every 2 minutes
 - CI refuses to package a libtorrent module unless the compiled hard-disable marker is present
 - A runtime guard additionally aborts a torrent if libtorrent ever reports non-zero BitTorrent piece payload upload
 - As soon as all wanted files are complete, the torrent is paused, peers are disconnected, and it is removed from the session and GUI

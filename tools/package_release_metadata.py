@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from verify_patched_libtorrent import find_libtorrent_binaries, verify_binary
+from verify_patched_libtorrent import TURNOVER_MARKER, find_libtorrent_binaries, verify_binary
 
 
 QT_LICENSES = ("LGPL-3.0-only.txt", "GPL-3.0-only.txt")
@@ -121,6 +121,8 @@ def main() -> int:
 
     patcher = repo_root / "tools" / "patch_libtorrent_no_piece_upload.py"
     copy(patcher, licenses / "libtorrent-no-piece-upload-patcher.py")
+    turnover_patcher = repo_root / "tools" / "patch_libtorrent_peer_turnover.py"
+    copy(turnover_patcher, licenses / "libtorrent-peer-turnover-patcher.py")
     copy(repo_root / "LICENSES" / "libtorrent.txt", licenses / "libtorrent.txt")
 
     for name in QT_LICENSES:
@@ -151,6 +153,13 @@ def main() -> int:
         "policy: BitTorrent PIECE payload queueing code removed; attempted entry disconnects the peer",
         f"compiled marker: {PATCH_MARKER.decode('ascii')}",
         f"source patcher SHA-256: {sha256(patcher)}",
+        "",
+        "patched source: src/torrent.cpp::compare_disconnect_peer(), torrent::disconnect_peers()",
+        "source transformation: tools/patch_libtorrent_peer_turnover.py",
+        "policy: peer turnover keeps new and currently sending peers; ranks by current rate",
+        f"compiled marker: {TURNOVER_MARKER.decode('ascii')}",
+        f"source patcher SHA-256: {sha256(turnover_patcher)}",
+        "",
     ]
     for module, digest in module_hashes:
         relative = module.relative_to(app_dir)

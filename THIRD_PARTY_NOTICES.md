@@ -20,6 +20,8 @@ This project builds libtorrent from the upstream `v2.1.1` source revision and ap
 
 The modification removes the normal BitTorrent PIECE payload queueing implementation from `bt_peer_connection::write_piece()`. If that path is entered, the patched implementation records a compile-time marker and disconnects the peer rather than queueing file-piece bytes. The release package includes the exact patch and `PATCHED_LIBTORRENT_BUILD.txt` with build provenance and SHA-256 hashes.
 
+A second modification (`tools/patch_libtorrent_peer_turnover.py`) changes how `src/torrent.cpp` picks peers for periodic peer turnover: peers we want pieces from are kept during their first two minutes and while they are sending to us, and the rest are ranked by their current download rate instead of putting every non-seed before any seed.
+
 libtorrent is released under the BSD license and includes additional third-party notices in its upstream license file. A copy of the exact upstream license/notices is included at `LICENSES/libtorrent.txt`.
 
 Upstream project:

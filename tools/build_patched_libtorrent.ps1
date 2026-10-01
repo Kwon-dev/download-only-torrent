@@ -38,6 +38,7 @@ $licenseCacheDir = Join-Path $cacheDir "licenses"
 $libtorrentDir = Join-Path $WorkRoot "libtorrent"
 $boostDir = Join-Path $WorkRoot "boost"
 $patcher = Join-Path $repoRoot "tools\patch_libtorrent_no_piece_upload.py"
+$turnoverPatcher = Join-Path $repoRoot "tools\patch_libtorrent_peer_turnover.py"
 $wheelPattern = "libtorrent-$libtorrentVersion-*.whl"
 
 Write-Host "Dependency workspace: $WorkRoot"
@@ -91,6 +92,10 @@ if ($LASTEXITCODE -ne 0) { throw "libtorrent dependency submodule initialization
 $patchedSource = Join-Path $libtorrentDir "src\bt_peer_connection.cpp"
 & $Python $patcher $patchedSource
 if ($LASTEXITCODE -ne 0) { throw "libtorrent source hardening failed" }
+
+$turnoverSource = Join-Path $libtorrentDir "src\torrent.cpp"
+& $Python $turnoverPatcher $turnoverSource
+if ($LASTEXITCODE -ne 0) { throw "libtorrent peer turnover patch failed" }
 
 if (-not (Test-Path $boostDir)) {
     git clone --depth=1 --recurse-submodules -j10 --branch $boostTag https://github.com/boostorg/boost.git $boostDir | Out-Host

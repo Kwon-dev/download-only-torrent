@@ -121,6 +121,22 @@ def set_bind_default_interface(enabled: bool) -> None:
     settings.sync()
 
 
+IPV6_KEY = "network/enable_ipv6"
+
+
+def ipv6_enabled() -> bool:
+    value = QSettings().value(IPV6_KEY, True)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def set_ipv6_enabled(enabled: bool) -> None:
+    settings = QSettings()
+    settings.setValue(IPV6_KEY, bool(enabled))
+    settings.sync()
+
+
 def listen_interfaces(port: int, addresses: tuple | None = None) -> str:
     """libtorrent listen_interfaces for the given port.
 
@@ -131,13 +147,16 @@ def listen_interfaces(port: int, addresses: tuple | None = None) -> str:
     """
 
     port = max(1, min(65535, int(port)))
+    use_ipv6 = ipv6_enabled()
     if bind_default_interface_enabled():
         ipv4, ipv6 = addresses if addresses is not None else default_route_addresses()
         parts = []
         if ipv4:
             parts.append(f"{ipv4}:{port}")
-        if ipv6:
+        if ipv6 and use_ipv6:
             parts.append(f"[{ipv6}]:{port}")
         if parts:
             return ",".join(parts)
-    return f"0.0.0.0:{port},[::]:{port}"
+    if use_ipv6:
+        return f"0.0.0.0:{port},[::]:{port}"
+    return f"0.0.0.0:{port}"
