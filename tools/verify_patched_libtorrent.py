@@ -6,6 +6,8 @@ from pathlib import Path
 
 
 MARKER = b"DOWNLOAD_ONLY_TORRENT_PIECE_UPLOAD_DISABLED"
+# Peer turnover grace period (tools/patch_libtorrent_peer_turnover.py).
+TURNOVER_MARKER = b"DOWNLOAD_ONLY_TORRENT_TURNOVER_GRACE"
 
 
 def sha256(path: Path) -> str:
@@ -25,6 +27,11 @@ def verify_binary(path: Path) -> str:
         raise RuntimeError(
             f"patched libtorrent marker is missing from {path}; "
             "refusing to package a stock/upload-capable libtorrent build"
+        )
+    if TURNOVER_MARKER not in data:
+        raise RuntimeError(
+            f"peer turnover patch marker is missing from {path}; "
+            "the libtorrent build predates the turnover grace period patch"
         )
     return hashlib.sha256(data).hexdigest()
 
@@ -98,7 +105,7 @@ def main() -> int:
     digest = verify_binary(module_path)
     print(f"Patched libtorrent verified: {module_path}")
     print(f"SHA-256: {digest}")
-    print(f"Marker: {MARKER.decode('ascii')}")
+    print(f"Markers: {MARKER.decode('ascii')}, {TURNOVER_MARKER.decode('ascii')}")
     return 0
 
 

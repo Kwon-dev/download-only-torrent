@@ -38,7 +38,13 @@ from PySide6.QtWidgets import (
 
 from . import peer_strategy
 from .config import AppConfig
-from .port_config import bind_default_interface_enabled, set_bind_default_interface
+from .port_config import (
+    bind_default_interface_enabled,
+    default_route_addresses,
+    ipv6_enabled,
+    set_bind_default_interface,
+    set_ipv6_enabled,
+)
 from .engine import TorrentEngine, TorrentFile
 from .utils import format_bytes, format_rate
 
@@ -140,9 +146,10 @@ TEXT = {
         ),
         "seeder_pref": "Prefer seeders",
         "seeder_pref_tip": (
-            "When connection slots are nearly full, rotates out peers with nothing "
-            "to offer and non-seeders more often so new seeders can connect, and "
-            "reconnects seeders that dropped. Safe to combine with the large peer pool."
+            "When connection slots are nearly full, rotates out weak peers a little "
+            "more often so new seeders can connect, and redials seeders that "
+            "dropped. Peers in their first two minutes or sending to us right now "
+            "are never rotated out. Safe to combine with the large peer pool."
         ),
         "bind_default": "Use only the network interface with internet access",
         "bind_tip": (
@@ -150,6 +157,14 @@ TEXT = {
             "of on every adapter (VPN, Hyper-V/WSL, loopback). Follows network "
             "changes automatically. Turn off to listen on all interfaces."
         ),
+        "enable_ipv6": "Use IPv6",
+        "ipv6_tip": (
+            "Also listen, announce and connect over IPv6. It only works when both "
+            "your router and your internet provider hand out IPv6 addresses; "
+            "otherwise it has no effect."
+        ),
+        "ipv6_now": "current IPv6 address: {address}",
+        "ipv6_none": "none (router/ISP not providing IPv6)",
         "request_queue": "Outstanding requests per peer",
         "request_queue_tip": (
             "How many 16 KiB block requests to keep in flight to each peer. Raise "
@@ -248,8 +263,9 @@ TEXT = {
         ),
         "seeder_pref": "시더 우선 연결",
         "seeder_pref_tip": (
-            "연결 슬롯이 거의 찼을 때 받을 것이 없는 피어와 비시더부터 더 자주 "
-            "교체해 새 시더가 들어올 자리를 만들고, 끊어진 시더는 다시 연결합니다. "
+            "연결 슬롯이 거의 찼을 때 약한 피어를 조금 더 자주 교체해 새 시더가 "
+            "들어올 자리를 만들고, 끊어진 시더는 다시 연결합니다. 연결된 지 2분이 "
+            "안 됐거나 지금 보내 주고 있는 피어는 교체하지 않습니다. "
             "대형 피어 풀과 함께 사용해도 됩니다."
         ),
         "bind_default": "인터넷에 연결된 네트워크 인터페이스만 사용",
@@ -258,6 +274,13 @@ TEXT = {
             "수신하고 트래커에 공지합니다. 네트워크가 바뀌면 자동으로 따라갑니다. "
             "끄면 모든 인터페이스에서 수신합니다."
         ),
+        "enable_ipv6": "IPv6 사용",
+        "ipv6_tip": (
+            "IPv6로도 수신, 트래커 공지, 피어 연결을 합니다. 공유기와 통신사가 "
+            "모두 IPv6 주소를 제공해야 동작하고, 아니면 아무 영향이 없습니다."
+        ),
+        "ipv6_now": "현재 IPv6 주소: {address}",
+        "ipv6_none": "없음 (공유기/통신사가 IPv6를 제공하지 않음)",
         "request_queue": "피어당 동시 요청 수",
         "request_queue_tip": (
             "피어 한 명에게 미리 걸어두는 16KiB 블록 요청 수입니다. 진단에 "
@@ -669,6 +692,17 @@ class SettingsDialog(QDialog):
         self.bind_default_interface.setToolTip(tr(lang, "bind_tip"))
         form.addRow(self.bind_default_interface)
 
+        self.ipv6 = QCheckBox(tr(lang, "enable_ipv6"))
+        self.ipv6.setChecked(ipv6_enabled())
+        self.ipv6.setToolTip(tr(lang, "ipv6_tip"))
+        ipv6_address = default_route_addresses()[1]
+        self.ipv6_status = QLabel(
+            tr(lang, "ipv6_now", address=ipv6_address or tr(lang, "ipv6_none"))
+        )
+        self.ipv6_status.setEnabled(False)
+        form.addRow(self.ipv6)
+        form.addRow(self.ipv6_status)
+
         self.dht = QCheckBox(tr(lang, "enable_dht"))
         self.dht.setChecked(config.enable_dht)
         self.pex = QCheckBox(tr(lang, "enable_pex"))
@@ -753,6 +787,7 @@ class SettingsDialog(QDialog):
             self.large_peer_pool.isChecked(), self.seeder_preference.isChecked()
         )
         set_bind_default_interface(self.bind_default_interface.isChecked())
+        set_ipv6_enabled(self.ipv6.isChecked())
 
 
 class MainWindow(QMainWindow):

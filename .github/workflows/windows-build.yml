@@ -44,7 +44,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}\patched-libtorrent-cache
-          key: patched-libtorrent-${{ runner.os }}-py311-${{ hashFiles('tools/libtorrent_build_manifest.json', 'tools/patch_libtorrent_no_piece_upload.py') }}
+          key: patched-libtorrent-${{ runner.os }}-py311-${{ hashFiles('tools/libtorrent_build_manifest.json', 'tools/patch_libtorrent_no_piece_upload.py', 'tools/patch_libtorrent_peer_turnover.py') }}
 
       - name: Install Python dependencies
         run: |

@@ -153,6 +153,7 @@ def test_settings_dialog_splits_general_and_advanced(qapp):
         dialog.bind_default_interface,
         dialog.dht,
         dialog.utp,
+        dialog.ipv6,
         dialog.max_out_request_queue,
         dialog.peer_connect_timeout,
         dialog.add_extra_trackers,
@@ -164,6 +165,7 @@ def test_settings_dialog_splits_general_and_advanced(qapp):
     dialog.large_peer_pool.setChecked(True)
     dialog.seeder_preference.setChecked(True)
     dialog.bind_default_interface.setChecked(False)
+    dialog.ipv6.setChecked(False)
     dialog.max_out_request_queue.setValue(2000)
     dialog.peer_connect_timeout.setValue(5)
     dialog.apply()
@@ -171,11 +173,12 @@ def test_settings_dialog_splits_general_and_advanced(qapp):
 
     assert peer_strategy.large_pool_enabled() and peer_strategy.seeder_preference_enabled()
     assert port_config.bind_default_interface_enabled() is False
+    assert port_config.ipv6_enabled() is False
     assert QSettings().value("network/max_out_request_queue") in (2000, "2000")
     applied = window.engine.session.get_settings()
     assert applied["max_out_request_queue"] == 2000
     assert applied["peer_connect_timeout"] == 5
-    assert applied["peer_turnover"] == 15
+    assert applied["peer_turnover_interval"] == 120
 
 
 def test_peer_panel_lists_peers_of_selected_download(qapp, tmp_path, seeder):
@@ -238,12 +241,16 @@ def test_rate_meter_and_status_bar_show_average_and_connecting(qapp, monkeypatch
     clock = [1000.0]
     monkeypatch.setattr(desktop_experience.time, "monotonic", lambda: clock[0])
     meter = desktop_experience.RateMeter()
-    meter.sample(0)
+    meter.sample(0, active=True)
     clock[0] += 10
-    meter.sample(1000)  # 1000 B/s for 10 s
+    meter.sample(1000, active=True)  # 1000 B/s for 10 s
     clock[0] += 10
-    meter.sample(0)
+    meter.sample(0, active=True)  # downloading, but stalled for 10 s
+    clock[0] += 600
+    meter.sample(0, active=False)  # idle: queue empty for 10 min
     assert meter.total_bytes == 10_000
+    assert meter.active_seconds == 20
+    # Idle time does not dilute the average.
     assert meter.average == 500
 
     monkeypatch.undo()
@@ -253,3 +260,41 @@ def test_rate_meter_and_status_bar_show_average_and_connecting(qapp, monkeypatch
     spin_qt(700)
     text = window._status_summary_label.text()
     assert "평균" in text and "연결 시도" in text
+
+
+def test_disconnect_causes_group_who_ended_the_connection():
+    cause = debug_ui.disconnect_cause
+    assert cause("system", 10054, "sock_read") == "remote"  # reset by peer
+    assert cause("asio.misc", 2, "sock_read") == "remote"  # end of file
+    assert cause("system", 10060, "sock_read") == "silent"
+    assert cause("system", 110, "sock_read") == "silent"
+    assert cause("system", 10060, "connect") == "dial"
+    assert cause("libtorrent", 36, "connect") == "dial"  # our connect timeout
+    assert cause("system", 10045, "sock_bind") == "dial"
+    assert cause("libtorrent", 51, "bittorrent") == "handshake"
+    assert cause("libtorrent", 97, "bittorrent") == "turnover"
+    assert cause("libtorrent", 36, "bittorrent") == "local"
+
+    # Every cause is always listed, turnover included, even at zero.
+    from collections import Counter
+
+    lines = debug_ui._cause_lines(Counter({"remote": 3, "dial": 1}))
+    assert len(lines) == len(debug_ui.DISCONNECT_CAUSES)
+    assert "75.0%" in lines[0] and "closed by the remote peer" in lines[0]
+    assert lines[-1].split()[0] == "0" and "optimistic disconnect" in lines[-1]
+
+
+def test_resume_saves_are_counted_not_logged():
+    class _Alert:
+        handle = None
+
+        def what(self):
+            return "save_resume_data"
+
+        def message(self):
+            return "resume data generated"
+
+    log = debug_ui.DiagnosticsLog()
+    log.add(_Alert())
+    assert list(log.entries) == []
+    assert log.total(log.events)["save_resume_data"] == 1

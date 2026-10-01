@@ -317,21 +317,27 @@ def _port_status(window, language: str) -> str:
 
 
 class RateMeter:
-    """Average download payload rate since the app started.
+    """Average download payload rate while something was downloading.
 
     Integrates the sampled total rate, so torrents that finish and leave the
-    session still count toward the average.
+    session still count toward the average. Idle time (nothing downloading)
+    is left out, so the average does not sink once the queue is empty.
     """
 
     def __init__(self):
         self.started = time.monotonic()
         self.total_bytes = 0.0
+        self.active_seconds = 0.0
         self._last_sample: float | None = None
 
-    def sample(self, rate: int) -> None:
+    def sample(self, rate: int, active: bool = False) -> None:
         now = time.monotonic()
+        rate = max(0, int(rate))
         if self._last_sample is not None:
-            self.total_bytes += max(0, rate) * (now - self._last_sample)
+            interval = now - self._last_sample
+            self.total_bytes += rate * interval
+            if active or rate > 0:
+                self.active_seconds += interval
         self._last_sample = now
 
     @property
@@ -340,8 +346,9 @@ class RateMeter:
 
     @property
     def average(self) -> float:
-        elapsed = self.elapsed
-        return self.total_bytes / elapsed if elapsed > 0 else 0.0
+        if self.active_seconds <= 0:
+            return 0.0
+        return self.total_bytes / self.active_seconds
 
 
 def _install_status_bar(window) -> None:
@@ -393,7 +400,7 @@ def _install_status_bar(window) -> None:
         pending = len(window.engine.pending_magnets)
         checking_or_waiting += pending
         total = len(tasks) + pending
-        meter.sample(total_rate)
+        meter.sample(total_rate, active > 0)
         average = format_rate(int(meter.average))
 
         if window.config.language == "ko":

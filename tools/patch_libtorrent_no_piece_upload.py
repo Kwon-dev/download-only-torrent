@@ -35,14 +35,16 @@ REPLACEMENT_BODY = r'''{
 	}'''
 
 
-def function_span(text: str) -> tuple[int, int]:
-    sig = text.find(SIGNATURE)
-    if sig < 0:
-        raise RuntimeError(f"function signature not found: {SIGNATURE}")
+def function_span(text: str, signature: str = SIGNATURE) -> tuple[int, int]:
+    """(start, end) of the body of the function with this exact signature."""
 
-    brace = text.find("{", sig + len(SIGNATURE))
+    sig = text.find(signature)
+    if sig < 0:
+        raise RuntimeError(f"function signature not found: {signature}")
+
+    brace = text.find("{", sig + len(signature))
     if brace < 0:
-        raise RuntimeError("opening brace not found for write_piece")
+        raise RuntimeError(f"opening brace not found for {signature}")
 
     depth = 0
     in_string = False
@@ -76,13 +78,13 @@ def function_span(text: str) -> tuple[int, int]:
         if ch == "/" and nxt == "/":
             nl = text.find("\n", i + 2)
             if nl < 0:
-                raise RuntimeError("unterminated line comment while parsing write_piece")
+                raise RuntimeError(f"unterminated line comment while parsing {signature}")
             i = nl + 1
             continue
         if ch == "/" and nxt == "*":
             end = text.find("*/", i + 2)
             if end < 0:
-                raise RuntimeError("unterminated block comment while parsing write_piece")
+                raise RuntimeError(f"unterminated block comment while parsing {signature}")
             i = end + 2
             continue
 
@@ -94,7 +96,7 @@ def function_span(text: str) -> tuple[int, int]:
                 return brace, i + 1
         i += 1
 
-    raise RuntimeError("closing brace not found for write_piece")
+    raise RuntimeError(f"closing brace not found for {signature}")
 
 
 def patch(path: Path) -> None:
