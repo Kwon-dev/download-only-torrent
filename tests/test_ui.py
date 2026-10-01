@@ -49,6 +49,8 @@ def test_main_window_diagnostics_and_status_bar(qapp, tmp_path, seeder):
 
     window = app_module.build_main_window(qapp)
     engine = window.engine
+    # Only the local seeder may connect; the test must stay off the public DHT.
+    assert engine.session.get_settings()["enable_dht"] is False
     task_id = engine.add_torrent_file(str(path), str(tmp_path / "dl"), [0])
     handle = engine.tasks[task_id].handle
     handle.connect_peer(seeder.endpoint)
