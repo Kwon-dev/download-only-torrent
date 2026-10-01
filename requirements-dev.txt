@@ -1,0 +1,5 @@
+-r requirements.txt
+# Stock wheel for the Linux test job. Release builds use the patched
+# libtorrent compiled by tools/build_patched_libtorrent.ps1 instead.
+libtorrent==2.1.1
+pytest==9.1.1

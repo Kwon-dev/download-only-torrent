@@ -35,21 +35,3 @@ def client_peer_fingerprint() -> str:
         revision,
         0,
     )
-
-
-def install_engine_identity(engine_class) -> None:
-    """Advertise this application instead of libtorrent's default identity."""
-
-    if getattr(engine_class, "_client_identity_installed", False):
-        return
-
-    original_session_settings = engine_class._session_settings
-
-    def session_settings(self):
-        settings = original_session_settings(self)
-        settings["user_agent"] = client_user_agent()
-        settings["peer_fingerprint"] = client_peer_fingerprint()
-        return settings
-
-    engine_class._session_settings = session_settings
-    engine_class._client_identity_installed = True

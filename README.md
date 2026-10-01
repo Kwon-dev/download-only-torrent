@@ -18,13 +18,17 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 - Batch pause / resume / remove and keyboard shortcuts
 - Configurable download folder and download speed limit
 - Configurable listen port; first launch automatically chooses a currently unused TCP/UDP port
+- Listens and announces only on the default-route address (not on VPN, Hyper-V/WSL or loopback adapters), following network changes; can be switched back to all interfaces
+- Status bar shows whether the listen port is reachable (incoming connections, UPnP/NAT-PMP mapping)
+- Optional extra public trackers added to every non-private torrent (editable list, on by default; never added to private torrents)
 - DHT, PEX, LSD, TCP and uTP toggles
 - Active download/torrent queue limits disabled so the app does not impose an artificial simultaneous-download cap
 - Adjustable row height and persistent column widths
 - Active downloads are persisted and restored after app restart, using libtorrent resume data so already-downloaded pieces are not re-hashed and magnet links do not need to fetch metadata again
 - A private copy of each added `.torrent` file is kept, so a download survives the original file being deleted (for example from a browser download cache); entries that still cannot be restored are kept and reported instead of being dropped
 - Progress, download speed, connected peers and piece-payload-upload counters
-- Diagnostic Properties window with tracker, DHT, listen-port and recent libtorrent alert information
+- Diagnostic Properties window per torrent (peer list with seed/choke flags, disconnect reasons, tracker status, alerts) and a session-wide Diagnostics window (`Ctrl+D`)
+- Restored downloads without resume data are checked one at a time instead of all at once, with multi-threaded hashing
 - Seeding is disabled by policy
 - Session unchoke slots are set to `0`
 - BEP 6 "allowed fast" pieces are never offered (`allowed_fast_set_size = 0`), so choked peers have no path to request piece payload and are not disconnected for trying
@@ -66,6 +70,7 @@ This design provides strong technical evidence that the distributed binary was b
 - `Space` — pause/resume selected torrent(s)
 - `Ctrl+A` — select all rows
 - `Alt+Enter` — properties / diagnostics
+- `Ctrl+D` — session-wide diagnostics
 - `Ctrl+,` — settings
 - `Ctrl++` / `Ctrl+-` — increase/decrease row height
 
@@ -100,9 +105,20 @@ dist\DownloadOnlyTorrent\DownloadOnlyTorrent.exe
 
 Keep the entire `dist\DownloadOnlyTorrent` directory together when distributing it. The build intentionally uses PyInstaller **onedir** mode so Qt/PySide6 shared libraries remain separately replaceable for LGPL compliance.
 
+## Tests
+
+`tests/` holds a pytest suite that drives the real engine and main window (offscreen Qt) against local libtorrent sessions: resume/restore, the check queue, extra trackers, peer strategies, listen-address selection and the diagnostics views. It uses the stock libtorrent wheel, so it checks the application logic; the piece-upload patch is verified by the Windows build.
+
+```bash
+pip install -r requirements-dev.txt
+QT_QPA_PLATFORM=offscreen python -m pytest tests
+```
+
+`.github/workflows/tests.yml` runs these on every branch push (about two minutes on Linux).
+
 ## Automatic Windows build
 
-`.github/workflows/windows-build.yml` runs on pull requests and pushes to `main`. It builds the patched libtorrent from source, verifies the hard-disable marker, builds an onedir Windows application, includes the applicable license/source-offer and build-provenance files, smoke-tests the executable, then uploads an artifact for 14 days.
+`.github/workflows/windows-build.yml` runs on pushes to `main`, on `v*` tags, every four days on `main` (so the cached patched-libtorrent wheel is not evicted after GitHub's 7 days of inactivity), and on demand from the Actions tab. Branches and pull requests run only the Linux tests. It builds the patched libtorrent from source, verifies the hard-disable marker, builds an onedir Windows application, includes the applicable license/source-offer and build-provenance files, smoke-tests the executable, then uploads an artifact for 14 days.
 
 Pushing a tag beginning with `v` also creates or updates the corresponding GitHub Release and attaches one Windows ZIP:
 

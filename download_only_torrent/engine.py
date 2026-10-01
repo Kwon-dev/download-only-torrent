@@ -10,7 +10,10 @@ from typing import Iterable
 
 import libtorrent as lt
 
+from . import peer_strategy
+from .client_identity import client_peer_fingerprint, client_user_agent
 from .config import AppConfig
+from .port_config import ensure_listen_port, listen_interfaces
 
 
 @dataclass(slots=True)
@@ -95,6 +98,18 @@ def _final_resume_flags():
 
 
 _RESUME_SAVE_INTERVAL_SECONDS = 60.0
+_LISTEN_REFRESH_INTERVAL_SECONDS = 30.0
+
+# Restored torrents without resume data must hash everything already on disk.
+# They are not auto-managed, so libtorrent's active_checking limit does not
+# apply and they would all read at once; on a hard disk that seeks constantly.
+# Check them one at a time instead; hashing_threads keeps that one fast.
+_MAX_CONCURRENT_CHECKS = 1
+_CHECKING_STATES = ("CHECKING FILES", "CHECKING RESUME DATA")
+
+
+def _hashing_threads() -> int:
+    return max(2, min(8, (os.cpu_count() or 2) // 2))
 
 
 @dataclass(slots=True)
@@ -126,7 +141,9 @@ class TorrentEngine:
 
     def __init__(self, config: AppConfig):
         self.config = config
-        self.session = lt.session(self._session_settings())
+        settings = self._session_settings()
+        self._applied_listen = settings["listen_interfaces"]
+        self.session = lt.session(settings)
         self.pending_magnets: dict[str, PendingMagnet] = {}
         self.restored_magnets: dict[str, RestoredMagnet] = {}
         self.tasks: dict[str, TorrentTask] = {}
@@ -136,11 +153,21 @@ class TorrentEngine:
         self.unrestored: list[dict[str, object]] = []
         self._alert_listeners: list = []
         self._last_resume_save = time.monotonic()
+        self._last_listen_check = time.monotonic()
+        # Task ids waiting for a full check, and the ones currently checking.
+        self.check_queue: list[str] = []
+        self._checking: set[str] = set()
         self._ensure_resume_alerts()
         self._configure_local_peer_class()
         self._restore_tasks()
 
     def _session_settings(self) -> dict:
+        """Every session setting the app manages, in one place.
+
+        Applied whole at startup and on every settings change; keys that are
+        not listed keep their current value.
+        """
+
         settings: dict[str, object] = {
             "enable_dht": self.config.enable_dht,
             "enable_lsd": self.config.enable_lsd,
@@ -149,6 +176,10 @@ class TorrentEngine:
             "enable_incoming_utp": self.config.enable_utp,
             "enable_outgoing_utp": self.config.enable_utp,
             "connections_limit": max(2, self.config.max_connections),
+            # Faster full checks: hash on several threads (default 1) and keep
+            # 16 MiB of reads outstanding instead of 4 MiB.
+            "hashing_threads": _hashing_threads(),
+            "checking_mem_usage": 1024,
             "choking_algorithm": 0,
             "unchoke_slots_limit": 0,
             # BEP 6 "allowed fast" lets peers request a few pieces while we keep
@@ -156,16 +187,113 @@ class TorrentEngine:
             # policy and reach the patched write_piece(), which disconnects the
             # peer. Never offer the set, so interested peers stay connected.
             "allowed_fast_set_size": 0,
-            "user_agent": "DownloadOnlyTorrent/0.1.0",
+            # Identify as this application rather than as libtorrent.
+            "user_agent": client_user_agent(),
+            "peer_fingerprint": client_peer_fingerprint(),
             "announce_to_all_trackers": True,
             "announce_to_all_tiers": True,
+            # Set before the session exists so libtorrent never briefly tries
+            # its default port 6881; a chosen port is honored, not replaced.
+            "listen_interfaces": self._listen_interfaces(),
+            "listen_system_port_fallback": False,
+            # Torrents are not auto-managed; make sure no hidden session queue
+            # can cap how many download at once.
+            "active_downloads": -1,
+            "active_seeds": -1,
+            "active_checking": -1,
+            "active_dht_limit": -1,
+            "active_tracker_limit": -1,
+            "active_lsd_limit": -1,
+            "active_limit": -1,
         }
         settings["download_rate_limit"] = (
             self.config.download_limit_kib * 1024
             if self.config.download_limit_kib > 0
             else 0
         )
+        settings.update(peer_strategy.session_settings(self.config.max_connections))
         return settings
+
+    def _listen_interfaces(self) -> str:
+        return listen_interfaces(ensure_listen_port())
+
+    def apply_listen_settings(self) -> None:
+        """Re-apply the listen port and address, then re-announce."""
+
+        self._applied_listen = self._listen_interfaces()
+        try:
+            self.session.apply_settings(
+                {
+                    "listen_interfaces": self._applied_listen,
+                    "listen_system_port_fallback": False,
+                }
+            )
+        except Exception:
+            return
+        for handle in self._all_handles():
+            self._kick_discovery(handle)
+
+    def _refresh_listen_interfaces(self) -> None:
+        # The default-route address changes when switching networks, waking
+        # from sleep or toggling a VPN; follow it.
+        now = time.monotonic()
+        if now - self._last_listen_check < _LISTEN_REFRESH_INTERVAL_SECONDS:
+            return
+        self._last_listen_check = now
+        if self._listen_interfaces() != getattr(self, "_applied_listen", None):
+            self.apply_listen_settings()
+
+    def _all_handles(self) -> list:
+        handles = [task.handle for task in self.tasks.values()]
+        handles.extend(pending.handle for pending in self.pending_magnets.values())
+        return handles
+
+    def _torrent_connection_limit(self) -> int:
+        return peer_strategy.torrent_connection_limit(self.config.max_connections)
+
+    def _sync_extra_trackers(self, handle, ti=None, own=None) -> None:
+        """Add the configured public trackers, or remove them when disabled.
+
+        Never added to private torrents: announcing a private info-hash to
+        public trackers leaks it. URLs the torrent itself lists are kept.
+        """
+
+        try:
+            private = bool(ti.priv()) if ti is not None else False
+        except Exception:
+            private = False
+        wanted = [] if private else self.config.extra_tracker_urls()
+        try:
+            current = [entry["url"] for entry in handle.trackers()]
+        except Exception:
+            return
+        own_urls = set(own or [])
+        if ti is not None:
+            try:
+                own_urls.update(entry.url for entry in ti.trackers())
+            except Exception:
+                pass
+
+        configured = {line.strip() for line in self.config.extra_trackers.splitlines()}
+        stale = [
+            url
+            for url in current
+            if url in configured and url not in wanted and url not in own_urls
+        ]
+        try:
+            if stale:
+                handle.replace_trackers(
+                    [
+                        entry
+                        for entry in handle.trackers()
+                        if entry["url"] not in stale
+                    ]
+                )
+            for index, url in enumerate(wanted):
+                if url not in current:
+                    handle.add_tracker({"url": url, "tier": 100 + index})
+        except Exception:
+            pass
 
     def _configure_local_peer_class(self) -> None:
         try:
@@ -178,15 +306,32 @@ class TorrentEngine:
 
     def apply_config(self, config: AppConfig) -> None:
         self.config = config
-        self.session.apply_settings(self._session_settings())
+        settings = self._session_settings()
+        self._applied_listen = settings["listen_interfaces"]
+        self.session.apply_settings(settings)
         self._configure_local_peer_class()
         for task in self.tasks.values():
             try:
-                task.handle.set_max_connections(max(2, config.max_connections))
                 self._apply_feature_flags(task.handle)
+                self._sync_extra_trackers(
+                    task.handle, task.handle.torrent_file(), self._magnet_trackers(task.magnet_uri)
+                )
                 self._kick_discovery(task.handle)
             except Exception:
                 pass
+        for pending in self.pending_magnets.values():
+            self._sync_extra_trackers(
+                pending.handle, None, self._magnet_trackers(pending.uri)
+            )
+
+    @staticmethod
+    def _magnet_trackers(uri: str | None) -> list[str]:
+        if not uri:
+            return []
+        try:
+            return list(lt.parse_magnet_uri(uri).trackers)
+        except Exception:
+            return []
 
     def preview_torrent(self, torrent_path: str) -> tuple[str, list[TorrentFile]]:
         ti = lt.torrent_info(torrent_path)
@@ -195,12 +340,13 @@ class TorrentEngine:
     def prepare_magnet(self, magnet_uri: str, save_path: str) -> str:
         params = lt.parse_magnet_uri(magnet_uri)
         params.save_path = save_path
-        params.max_connections = max(2, self.config.max_connections)
+        params.max_connections = self._torrent_connection_limit()
         params.flags |= lt.torrent_flags.default_dont_download
         params.flags &= ~lt.torrent_flags.auto_managed
         params.flags &= ~lt.torrent_flags.paused
         params = self._apply_param_feature_flags(params)
         handle = self.session.add_torrent(params)
+        self._sync_extra_trackers(handle, None, self._magnet_trackers(magnet_uri))
         handle.resume()
         self._kick_discovery(handle)
         token = uuid.uuid4().hex
@@ -242,6 +388,7 @@ class TorrentEngine:
             [4 if i in selected else 0 for i in range(len(files))]
         )
         self._apply_feature_flags(pending.handle)
+        self._sync_extra_trackers(pending.handle, ti, self._magnet_trackers(pending.uri))
         pending.handle.resume()
         self._kick_discovery(pending.handle)
         task_id = self._register_task(
@@ -285,23 +432,30 @@ class TorrentEngine:
         magnet_uri: str | None = None,
         resume=None,
         persist: bool = True,
+        queue_check: bool = False,
     ) -> str:
         files = self._files_from_info(ti)
         selected = self._normalize_selection(selected_files, len(files))
         params = resume if resume is not None else lt.add_torrent_params()
         params.ti = ti
         params.save_path = save_path
-        params.max_connections = max(2, self.config.max_connections)
+        params.max_connections = self._torrent_connection_limit()
         params.file_priorities = [
             4 if i in selected else 0 for i in range(len(files))
         ]
         params.flags &= ~lt.torrent_flags.auto_managed
-        params.flags &= ~lt.torrent_flags.paused
+        if queue_check:
+            # A paused torrent does not start checking until it is resumed.
+            params.flags |= lt.torrent_flags.paused
+        else:
+            params.flags &= ~lt.torrent_flags.paused
         params = self._apply_param_feature_flags(params)
         handle = self.session.add_torrent(params)
         self._apply_feature_flags(handle)
-        handle.resume()
-        self._kick_discovery(handle)
+        self._sync_extra_trackers(handle, ti, self._magnet_trackers(magnet_uri))
+        if not queue_check:
+            handle.resume()
+            self._kick_discovery(handle)
         task_id = self._register_task(
             handle,
             ti.name(),
@@ -311,6 +465,8 @@ class TorrentEngine:
             source_torrent_path,
             magnet_uri=magnet_uri,
         )
+        if queue_check:
+            self.check_queue.append(task_id)
         if persist:
             self._persist_tasks()
         return task_id
@@ -324,6 +480,9 @@ class TorrentEngine:
 
     def resume(self, task_id: str) -> None:
         task = self.tasks[task_id]
+        # Resuming by hand starts the check right away instead of waiting.
+        if task_id in self.check_queue:
+            self.check_queue.remove(task_id)
         task.handle.resume()
         task.paused = False
         self._kick_discovery(task.handle)
@@ -337,6 +496,7 @@ class TorrentEngine:
         task = self.tasks.pop(task_id, None)
         if task is None:
             return
+        self.forget_check(task_id)
         self.discard_saved_state(task.key)
         try:
             task.handle.pause()
@@ -355,8 +515,44 @@ class TorrentEngine:
 
         self._alert_listeners.append(callback)
 
+    def forget_check(self, task_id: str) -> None:
+        if task_id in self.check_queue:
+            self.check_queue.remove(task_id)
+        self._checking.discard(task_id)
+
+    def _pump_check_queue(self) -> None:
+        for task_id in list(self._checking):
+            task = self.tasks.get(task_id)
+            if task is None or task.paused:
+                # Gone, or the user paused it and took over.
+                self._checking.discard(task_id)
+                continue
+            try:
+                state = self._state_name(task.handle.status())
+            except Exception:
+                self._checking.discard(task_id)
+                continue
+            if state not in _CHECKING_STATES:
+                self._checking.discard(task_id)
+                # Save right away so the next launch can skip this check.
+                self._request_resume_save(task.handle, _resume_flags())
+
+        while self.check_queue and len(self._checking) < _MAX_CONCURRENT_CHECKS:
+            task_id = self.check_queue.pop(0)
+            task = self.tasks.get(task_id)
+            if task is None or task.paused:
+                continue
+            try:
+                task.handle.resume()
+                self._kick_discovery(task.handle)
+            except Exception:
+                continue
+            self._checking.add(task_id)
+
     def poll(self) -> list[TaskSnapshot]:
         self._drain_alerts()
+        self._pump_check_queue()
+        self._refresh_listen_interfaces()
         self._save_resume_periodically()
         self._process_restored_magnets()
         snapshots: list[TaskSnapshot] = []
@@ -423,6 +619,8 @@ class TorrentEngine:
                         int(getattr(status, "num_peers", 0)),
                         "PAUSED"
                         if task.paused
+                        else "QUEUED FOR CHECK"
+                        if task_id in self.check_queue
                         else self._state_name(status),
                         task.save_path,
                     )
@@ -476,6 +674,7 @@ class TorrentEngine:
         task = self.tasks.pop(task_id, None)
         if task is None:
             return
+        self.forget_check(task_id)
         self.discard_saved_state(task.key)
         try:
             task.handle.pause()
@@ -527,6 +726,10 @@ class TorrentEngine:
                 handle.set_flags(flag)
 
     def _kick_discovery(self, handle: object) -> None:
+        try:
+            handle.set_max_connections(self._torrent_connection_limit())
+        except Exception:
+            pass
         try:
             handle.force_reannounce()
         except Exception:
@@ -828,6 +1031,7 @@ class TorrentEngine:
             source,
             resume=resume,
             persist=False,
+            queue_check=resume is None and not paused,
         )
         if paused:
             task = self.tasks[task_id]
@@ -863,12 +1067,13 @@ class TorrentEngine:
             return True
 
         params.save_path = save_path
-        params.max_connections = max(2, self.config.max_connections)
+        params.max_connections = self._torrent_connection_limit()
         params.flags |= lt.torrent_flags.default_dont_download
         params.flags &= ~lt.torrent_flags.auto_managed
         params.flags &= ~lt.torrent_flags.paused
         params = self._apply_param_feature_flags(params)
         handle = self.session.add_torrent(params)
+        self._sync_extra_trackers(handle, None, self._magnet_trackers(uri))
         handle.resume()
         self._kick_discovery(handle)
         token = uuid.uuid4().hex
@@ -902,6 +1107,9 @@ class TorrentEngine:
                     [4 if i in selected else 0 for i in range(len(files))]
                 )
                 self._apply_feature_flags(pending.handle)
+                self._sync_extra_trackers(
+                    pending.handle, ti, self._magnet_trackers(restored.uri)
+                )
                 pending.handle.resume()
                 self._kick_discovery(pending.handle)
                 task_id = self._register_task(
