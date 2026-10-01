@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from pathlib import Path
 
 import libtorrent as lt
@@ -14,136 +15,21 @@ from PySide6.QtWidgets import (
 )
 
 from .network_ui import _show_one_torrent_dialog
+from .peer_strategy import (
+    LARGE_PEER_POOL_KEY as _LARGE_PEER_POOL_KEY,
+    SEEDER_PREFERENCE_KEY as _SEEDER_PREFERENCE_KEY,
+    as_bool as _as_bool,
+    setting_bool as _setting_bool,
+)
 from .ui import SettingsDialog, TEXT
 from .utils import format_rate
 
 
 _CLOSE_TO_TRAY_KEY = "general/close_to_tray"
 _LEGACY_MINIMIZE_TO_TRAY_KEY = "general/minimize_to_tray"
-_LARGE_PEER_POOL_KEY = "network/large_peer_pool"
-_SEEDER_PREFERENCE_KEY = "network/seeder_preference"
-
-_LARGE_POOL_GLOBAL_CONNECTIONS = 1000
-_LARGE_POOL_TORRENT_CONNECTIONS = 500
-_LARGE_POOL_CONNECTION_SPEED = 80
-_LARGE_POOL_NUM_WANT = 500
-_LARGE_POOL_MAX_PEX_PEERS = 200
-
-# Peer turnover (percent of peers dropped, pool fill cutoff percent, interval
-# seconds). libtorrent drops uninteresting peers first, then non-seeds, then the
-# slowest senders, and only when it has new candidates to replace them with.
-_DEFAULT_TURNOVER = (4, 90, 300)
-_LARGE_POOL_TURNOVER = (10, 80, 60)
-_SEEDER_TURNOVER = (10, 80, 90)
-_LARGE_POOL_SEEDER_TURNOVER = (15, 75, 45)
-
 _SEEDER_RECONNECT_INTERVAL_SECONDS = 60.0
 _SEEDER_MEMORY_SECONDS = 15 * 60.0
 _SEEDER_MEMORY_MAX = 200
-
-
-def _as_bool(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _setting_bool(key: str, default: bool = False) -> bool:
-    return _as_bool(QSettings().value(key, default))
-
-
-def _turnover_profile(large_pool: bool, prefer_seeders: bool) -> tuple[int, int, int]:
-    """Pick how aggressively libtorrent rotates peers out of a full pool.
-
-    Rotating weak connections lets the large pool spend its extra sockets on
-    discovery, and lets the seeder preference free slots for new seeders without
-    tearing down the connections that are already delivering data.
-    """
-
-    if large_pool and prefer_seeders:
-        return _LARGE_POOL_SEEDER_TURNOVER
-    if large_pool:
-        return _LARGE_POOL_TURNOVER
-    if prefer_seeders:
-        return _SEEDER_TURNOVER
-    return _DEFAULT_TURNOVER
-
-
-def install_engine_concurrency_fix(engine_cls) -> None:
-    """Apply queue fixes and optional large-peer-pool tuning before restore."""
-
-    if getattr(engine_cls, "_concurrency_fix_installed", False):
-        return
-
-    original_session_settings = engine_cls._session_settings
-    original_kick_discovery = engine_cls._kick_discovery
-
-    def session_settings(self):
-        settings = original_session_settings(self)
-        settings.update(
-            {
-                "active_downloads": -1,
-                "active_seeds": -1,
-                "active_checking": -1,
-                "active_dht_limit": -1,
-                "active_tracker_limit": -1,
-                "active_lsd_limit": -1,
-                "active_limit": -1,
-            }
-        )
-
-        large_pool = _setting_bool(_LARGE_PEER_POOL_KEY)
-        if large_pool:
-            settings.update(
-                {
-                    "connections_limit": max(
-                        _LARGE_POOL_GLOBAL_CONNECTIONS,
-                        int(getattr(self.config, "max_connections", 200)),
-                    ),
-                    "connection_speed": _LARGE_POOL_CONNECTION_SPEED,
-                    "num_want": _LARGE_POOL_NUM_WANT,
-                    "max_pex_peers": _LARGE_POOL_MAX_PEX_PEERS,
-                }
-            )
-        else:
-            # Restore libtorrent defaults immediately when the option is turned
-            # off; apply_settings() only changes keys that are present.
-            settings.update(
-                {
-                    "connection_speed": 30,
-                    "num_want": 200,
-                    "max_pex_peers": 50,
-                }
-            )
-
-        turnover, cutoff, interval = _turnover_profile(
-            large_pool, _setting_bool(_SEEDER_PREFERENCE_KEY)
-        )
-        settings.update(
-            {
-                "peer_turnover": turnover,
-                "peer_turnover_cutoff": cutoff,
-                "peer_turnover_interval": interval,
-            }
-        )
-        return settings
-
-    def kick_discovery(self, handle):
-        if _setting_bool(_LARGE_PEER_POOL_KEY):
-            try:
-                handle.set_max_connections(
-                    max(
-                        _LARGE_POOL_TORRENT_CONNECTIONS,
-                        int(getattr(self.config, "max_connections", 200)),
-                    )
-                )
-            except Exception:
-                pass
-        return original_kick_discovery(self, handle)
-
-    engine_cls._session_settings = session_settings
-    engine_cls._kick_discovery = kick_discovery
-    engine_cls._concurrency_fix_installed = True
 
 
 def _close_to_tray_enabled(config=None) -> bool:
@@ -229,7 +115,7 @@ def _install_close_to_tray_settings() -> None:
         if isinstance(form, QFormLayout):
             form.addRow(labels["group"], self.large_peer_pool)
             form.addRow(labels["group"], self.seeder_preference)
-        self.resize(max(self.width(), 540), max(self.height(), 650))
+        self.resize(max(self.width(), 560), max(self.height(), 760))
 
     def extended_apply(self):
         close_to_tray = self.minimize_tray.isChecked()
@@ -358,7 +244,7 @@ def _install_seeder_preference(window) -> None:
     """Reconnect seeders that dropped while the optional preference is enabled.
 
     Freeing slots for seeders is left to libtorrent's peer turnover (see
-    _turnover_profile), which disconnects a few of the least useful peers at a
+    peer_strategy.turnover_profile), which disconnects a few of the least useful peers at a
     time and only when replacement candidates exist. This timer only adds
     connections: it remembers seeders we dialed ourselves (their port is their
     listen port, so they can be dialed again) and reconnects them while the
@@ -450,6 +336,45 @@ def _install_seeder_preference(window) -> None:
     window._seeder_preference_known_seeds = known_seeds
 
 
+# After this long without an incoming connection or a router mapping, the
+# listen port is most likely not reachable from the internet.
+_PORT_VERDICT_SECONDS = 180.0
+
+
+def _port_status(window, language: str) -> str:
+    """Short reachability summary: incoming peers prove the port is open."""
+
+    log = getattr(window, "_diagnostics_log", None)
+    try:
+        port = int(window.engine.session.listen_port())
+    except Exception:
+        port = 0
+    incoming = log.incoming_connections() if log is not None else 0
+    mapped = bool(getattr(log, "port_mapped", False))
+    started = getattr(log, "started", None)
+    elapsed = (datetime.now() - started).total_seconds() if started else 0.0
+
+    if incoming:
+        return (
+            f"포트 {port} 열림 (수신 {incoming})"
+            if language == "ko"
+            else f"Port {port} open ({incoming} incoming)"
+        )
+    if mapped:
+        return (
+            f"포트 {port} UPnP 연결됨, 수신 대기"
+            if language == "ko"
+            else f"Port {port} mapped by UPnP, no incoming yet"
+        )
+    if elapsed >= _PORT_VERDICT_SECONDS:
+        return (
+            f"포트 {port} 닫힘? (수신 0, 포트포워딩 확인)"
+            if language == "ko"
+            else f"Port {port} closed? (0 incoming, check forwarding)"
+        )
+    return f"포트 {port} 확인 중" if language == "ko" else f"Port {port} checking"
+
+
 def _install_status_bar(window) -> None:
     status = window.statusBar()
     status.setSizeGripEnabled(False)
@@ -504,6 +429,7 @@ def _install_status_bar(window) -> None:
                 text += "   |   대형 피어 풀"
             if _setting_bool(_SEEDER_PREFERENCE_KEY):
                 text += "   |   시더 우선"
+            text += "   |   " + _port_status(window, "ko")
         else:
             text = (
                 f"Active downloads {active}/{total}   |   "
@@ -517,6 +443,7 @@ def _install_status_bar(window) -> None:
                 text += "   |   Large peer pool"
             if _setting_bool(_SEEDER_PREFERENCE_KEY):
                 text += "   |   Seeder preference"
+            text += "   |   " + _port_status(window, "en")
 
         label.setText(text)
 

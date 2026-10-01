@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -122,6 +123,13 @@ TEXT = {
         "notify_complete": "Show completion notification",
         "theme": "Theme",
         "language": "Language",
+        "extra_trackers": "Extra trackers",
+        "add_extra_trackers": "Add these public trackers to every non-private torrent",
+        "extra_trackers_tip": (
+            "One announce URL per line. Torrents from index sites often list "
+            "mostly dead trackers; these keep peer discovery working. Never "
+            "added to private torrents."
+        ),
         "toolbar_main": "Main",
         "add_torrent": "Add .torrent",
         "add_magnet": "Add magnet",
@@ -187,6 +195,13 @@ TEXT = {
         "notify_complete": "다운로드 완료 알림 표시",
         "theme": "테마",
         "language": "언어",
+        "extra_trackers": "추가 트래커",
+        "add_extra_trackers": "비공개가 아닌 모든 토렌트에 아래 공개 트래커 추가",
+        "extra_trackers_tip": (
+            "한 줄에 공지 URL 하나씩 입력합니다. 인덱스 사이트의 토렌트는 죽은 "
+            "트래커가 많아 피어를 찾기 어려운데, 이 트래커들이 보완합니다. "
+            "비공개 토렌트에는 추가하지 않습니다."
+        ),
         "toolbar_main": "메인",
         "add_torrent": ".torrent 추가",
         "add_magnet": "마그넷 추가",
@@ -212,6 +227,43 @@ TEXT = {
         "download_complete": "다운로드 완료",
     },
 }
+
+
+_STATE_LABELS = {
+    "ko": {
+        "DOWNLOADING": "다운로드 중",
+        "DOWNLOADING METADATA": "메타데이터 받는 중",
+        "CHECKING FILES": "파일 검사 중",
+        "CHECKING RESUME DATA": "재개 정보 확인 중",
+        "QUEUED FOR CHECK": "검사 대기",
+        "FINISHED": "완료",
+        "SEEDING": "완료",
+        "COMPLETED": "완료",
+        "PAUSED": "일시정지",
+        "ABORTED": "중단됨",
+        "ERROR": "오류",
+    },
+    "en": {
+        "DOWNLOADING": "Downloading",
+        "DOWNLOADING METADATA": "Fetching metadata",
+        "CHECKING FILES": "Checking files",
+        "CHECKING RESUME DATA": "Checking resume data",
+        "QUEUED FOR CHECK": "Queued for check",
+        "FINISHED": "Finished",
+        "SEEDING": "Finished",
+        "COMPLETED": "Completed",
+        "PAUSED": "Paused",
+        "ABORTED": "Aborted",
+        "ERROR": "Error",
+    },
+}
+
+
+def state_label(language: str, state: str) -> str:
+    """Display text for an engine state name such as "CHECKING FILES"."""
+
+    table = _STATE_LABELS.get(language, _STATE_LABELS["en"])
+    return table.get(state, state.replace("_", " ").title())
 
 
 def tr(language: str, key: str, **kwargs) -> str:
@@ -506,6 +558,18 @@ class SettingsDialog(QDialog):
         self.language.setCurrentIndex(index if index >= 0 else 0)
         form.addRow(tr(lang, "language"), self.language)
 
+        self.add_extra_trackers = QCheckBox(tr(lang, "add_extra_trackers"))
+        self.add_extra_trackers.setChecked(config.add_extra_trackers)
+        self.add_extra_trackers.setToolTip(tr(lang, "extra_trackers_tip"))
+        self.extra_trackers = QPlainTextEdit(config.extra_trackers)
+        self.extra_trackers.setToolTip(tr(lang, "extra_trackers_tip"))
+        self.extra_trackers.setFixedHeight(96)
+        self.extra_trackers.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.add_extra_trackers.toggled.connect(self.extra_trackers.setEnabled)
+        self.extra_trackers.setEnabled(config.add_extra_trackers)
+        form.addRow(tr(lang, "extra_trackers"), self.add_extra_trackers)
+        form.addRow("", self.extra_trackers)
+
         layout.addLayout(form)
         box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -540,6 +604,8 @@ class SettingsDialog(QDialog):
         self.config.theme = self.theme.currentText()
         self.config.language = str(self.language.currentData())
         self.config.language_user_selected = True
+        self.config.add_extra_trackers = self.add_extra_trackers.isChecked()
+        self.config.extra_trackers = self.extra_trackers.toPlainText().strip()
         self.config.save()
 
 
@@ -768,7 +834,7 @@ class MainWindow(QMainWindow):
                 row, 4, QTableWidgetItem(str(snap.peers))
             )
             self.table.setItem(
-                row, 5, QTableWidgetItem(snap.state)
+                row, 5, QTableWidgetItem(state_label(lang, snap.state))
             )
             self.table.setItem(
                 row, 6, QTableWidgetItem(snap.save_path)

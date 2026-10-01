@@ -4,6 +4,7 @@ from types import MethodType
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -14,7 +15,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .port_config import ensure_listen_port, pick_free_port, save_listen_port
+from .port_config import (
+    bind_default_interface_enabled,
+    ensure_listen_port,
+    pick_free_port,
+    save_listen_port,
+    set_bind_default_interface,
+)
 from .runtime_fix import apply_listen_port, refresh_discovery
 from .ui import FileSelectionDialog, SettingsDialog, tr
 
@@ -24,11 +31,23 @@ TEXT = {
         "listen_port": "Listen port",
         "auto_port": "Auto pick",
         "port_tip": "The first launch picks an unused port automatically. You can change it here at any time.",
+        "bind_default": "Use only the network interface with internet access",
+        "bind_tip": (
+            "Listen and announce only on the address of the default route instead "
+            "of on every adapter (VPN, Hyper-V/WSL, loopback). Follows network "
+            "changes automatically. Turn off to listen on all interfaces."
+        ),
     },
     "ko": {
         "listen_port": "수신 포트",
         "auto_port": "빈 포트 자동 선택",
         "port_tip": "최초 실행 시 사용하지 않는 포트를 자동으로 고릅니다. 이후에는 여기서 원하는 포트로 변경할 수 있습니다.",
+        "bind_default": "인터넷에 연결된 네트워크 인터페이스만 사용",
+        "bind_tip": (
+            "모든 어댑터(VPN, Hyper-V/WSL, 루프백 등) 대신 기본 경로의 주소에서만 "
+            "수신하고 트래커에 공지합니다. 네트워크가 바뀌면 자동으로 따라갑니다. "
+            "끄면 모든 인터페이스에서 수신합니다."
+        ),
     },
 }
 
@@ -66,11 +85,16 @@ def install_settings_port_extension() -> None:
 
         layout = self.layout()
         form = layout.itemAt(0).layout() if layout and layout.count() else None
+        self.bind_default_interface = QCheckBox(_t(lang, "bind_default"), self)
+        self.bind_default_interface.setChecked(bind_default_interface_enabled())
+        self.bind_default_interface.setToolTip(_t(lang, "bind_tip"))
         if isinstance(form, QFormLayout):
             form.addRow(_t(lang, "listen_port"), widget)
+            form.addRow("", self.bind_default_interface)
 
     def extended_apply(self):
         original_apply(self)
+        set_bind_default_interface(self.bind_default_interface.isChecked())
         port = save_listen_port(self.listen_port.value())
         parent = self.parent()
         engine = getattr(parent, "engine", None)

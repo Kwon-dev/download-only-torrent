@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
 )
 
-from .ui import FileSelectionDialog, tr
+from .ui import FileSelectionDialog, state_label, tr
 from .utils import format_bytes, format_rate
 
 
@@ -358,12 +358,13 @@ def _install_main_table_sorting(window) -> None:
                 str(snap.peers),
                 int(snap.peers),
             )
+            state_text = state_label(lang, snap.state)
             _update_sortable_item(
                 table,
                 row,
                 5,
-                snap.state,
-                snap.state.casefold(),
+                state_text,
+                state_text.casefold(),
             )
             _update_sortable_item(
                 table,

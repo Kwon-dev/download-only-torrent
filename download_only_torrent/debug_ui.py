@@ -4,7 +4,7 @@ from collections import Counter, deque
 from datetime import datetime, timedelta
 
 import libtorrent as lt
-from PySide6.QtCore import QPoint, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QFontDatabase, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
-    QMenu,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -24,10 +23,6 @@ from .utils import format_bytes, format_rate
 
 TEXT = {
     "en": {
-        "pause": "Pause",
-        "resume": "Resume",
-        "remove": "Remove",
-        "properties": "Properties",
         "properties_title": "Torrent properties / diagnostics",
         "diagnostics_title": "Session diagnostics (all torrents)",
         "refresh": "Refresh",
@@ -35,10 +30,6 @@ TEXT = {
         "auto_refresh": "Auto refresh",
     },
     "ko": {
-        "pause": "일시정지",
-        "resume": "재개",
-        "remove": "제거",
-        "properties": "속성",
         "properties_title": "토렌트 속성 / 진단 정보",
         "diagnostics_title": "전체 진단 정보 (모든 토렌트)",
         "refresh": "새로고침",
@@ -367,6 +358,7 @@ class DiagnosticsLog:
         self.disconnects: dict[str | None, Counter] = {}
         self.events: dict[str | None, Counter] = {}
         self.port_mappings: dict[str, str] = {}
+        self.port_mapped = False
 
     def add(self, alert) -> None:
         try:
@@ -393,6 +385,8 @@ class DiagnosticsLog:
         if what in ("portmap", "portmap_error"):
             label = f"{_safe(lambda: alert.map_type)} #{_safe(lambda: alert.mapping)}"
             self.port_mappings[label] = message
+            if what == "portmap":
+                self.port_mapped = True
 
         name = str(_safe(lambda: alert.torrent_name, "") or "")
         stamp = datetime.now().strftime("%H:%M:%S")
@@ -410,6 +404,9 @@ class DiagnosticsLog:
         else:
             selected = [entry for entry in self.entries if entry[1] == key]
         return [f"{stamp} {text}" for stamp, _, _, text in selected[-limit:]]
+
+    def incoming_connections(self) -> int:
+        return self.total(self.events).get("incoming_connection", 0)
 
     def total(self, table: dict[str | None, Counter]) -> Counter:
         result = Counter()
@@ -774,51 +771,10 @@ def _install_diagnostics_action(window) -> None:
 
 
 def install_debug_ui(window) -> None:
-    """Install compact context menu, session diagnostics and alert capture."""
+    """Install session diagnostics and alert capture.
+
+    The task context menu (with Properties) lives in controls_ui.
+    """
 
     _install_alert_capture(window)
     _install_diagnostics_action(window)
-
-    try:
-        window.table.customContextMenuRequested.disconnect()
-    except Exception:
-        pass
-
-    def show_menu(pos: QPoint) -> None:
-        row = window.table.indexAt(pos).row()
-        task_id = window._task_id_at_row(row)
-        if not task_id:
-            return
-
-        window.table.selectRow(row)
-        lang = window.config.language
-        menu = QMenu(window)
-        menu.setStyleSheet(
-            "QMenu { padding: 3px; }"
-            "QMenu::item { padding: 6px 16px 6px 10px; margin: 0px; }"
-            "QMenu::separator { height: 1px; margin: 3px 6px; }"
-            "QMenu::indicator { width: 0px; height: 0px; }"
-        )
-
-        pause_action = menu.addAction(_t(lang, "pause"))
-        resume_action = menu.addAction(_t(lang, "resume"))
-        remove_action = menu.addAction(_t(lang, "remove"))
-        menu.addSeparator()
-        properties_action = menu.addAction(_t(lang, "properties"))
-
-        paused = window.engine.is_paused(task_id)
-        pause_action.setEnabled(not paused)
-        resume_action.setEnabled(paused)
-
-        chosen = menu.exec(window.table.viewport().mapToGlobal(pos))
-        if chosen is pause_action:
-            window.engine.pause(task_id)
-        elif chosen is resume_action:
-            window.engine.resume(task_id)
-        elif chosen is remove_action:
-            window.engine.remove(task_id)
-            window._remove_row(task_id)
-        elif chosen is properties_action:
-            PropertiesDialog(window, task_id).exec()
-
-    window.table.customContextMenuRequested.connect(show_menu)

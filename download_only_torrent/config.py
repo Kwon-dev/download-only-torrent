@@ -8,6 +8,20 @@ from pathlib import Path
 from PySide6.QtCore import QLocale, QSettings
 
 
+# Public trackers added to every non-private torrent. Torrents found on index
+# sites often list mostly dead trackers; these keep discovery working.
+DEFAULT_EXTRA_TRACKERS = "\n".join(
+    (
+        "udp://tracker.opentrackr.org:1337/announce",
+        "udp://open.stealth.si:80/announce",
+        "udp://tracker.torrent.eu.org:451/announce",
+        "udp://exodus.desync.com:6969/announce",
+        "udp://open.demonii.com:1337/announce",
+        "udp://explodie.org:6969/announce",
+    )
+)
+
+
 @dataclass(slots=True)
 class AppConfig:
     download_dir: str
@@ -26,6 +40,20 @@ class AppConfig:
     theme: str = "dark"
     language: str = "en"
     language_user_selected: bool = False
+    add_extra_trackers: bool = True
+    extra_trackers: str = DEFAULT_EXTRA_TRACKERS
+
+    def extra_tracker_urls(self) -> list[str]:
+        if not self.add_extra_trackers:
+            return []
+        urls: list[str] = []
+        for line in self.extra_trackers.splitlines():
+            url = line.strip()
+            lowered = url.lower()
+            if url and lowered.startswith(("udp://", "http://", "https://", "wss://")):
+                if url not in urls:
+                    urls.append(url)
+        return urls
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -66,6 +94,12 @@ class AppConfig:
             theme=str(settings.value("general/theme", "dark")),
             language=language,
             language_user_selected=language_user_selected,
+            add_extra_trackers=_as_bool(
+                settings.value("network/add_extra_trackers", True)
+            ),
+            extra_trackers=str(
+                settings.value("network/extra_trackers", DEFAULT_EXTRA_TRACKERS)
+            ),
         )
 
     def save(self) -> None:
@@ -92,6 +126,8 @@ class AppConfig:
         settings.setValue(
             "general/language_user_selected", self.language_user_selected
         )
+        settings.setValue("network/add_extra_trackers", self.add_extra_trackers)
+        settings.setValue("network/extra_trackers", self.extra_trackers)
         settings.sync()
         _set_windows_startup(self.start_with_windows)
 

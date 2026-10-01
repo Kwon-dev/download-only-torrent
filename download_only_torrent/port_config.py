@@ -72,28 +72,72 @@ def save_listen_port(port: int) -> int:
     return port
 
 
-def listen_interfaces(port: int) -> str:
-    port = max(1, min(65535, int(port)))
-    return f"0.0.0.0:{port},[::]:{port}"
+BIND_DEFAULT_INTERFACE_KEY = "network/bind_default_interface"
 
 
-def install_engine_listen_port(engine_class) -> None:
-    """Inject the persisted port into session settings before lt.session exists.
+def _probe_local_address(family: int, target: tuple) -> str | None:
+    """Local address the OS would use to reach target.
 
-    This prevents libtorrent from briefly trying its own default 6881 port before
-    the runtime networking configuration is applied.
+    Connecting a UDP socket only selects a route; no packet is sent.
     """
 
-    if getattr(engine_class, "_listen_port_patched", False):
-        return
-    original = engine_class._session_settings
+    try:
+        # Creating the socket fails outright when the family (usually IPv6)
+        # is disabled on this machine.
+        sock = socket.socket(family, socket.SOCK_DGRAM)
+    except OSError:
+        return None
+    try:
+        sock.connect(target)
+        return str(sock.getsockname()[0])
+    except OSError:
+        return None
+    finally:
+        sock.close()
 
-    def patched(self):
-        settings = original(self)
-        port = ensure_listen_port()
-        settings["listen_interfaces"] = listen_interfaces(port)
-        settings["listen_system_port_fallback"] = False
-        return settings
 
-    engine_class._session_settings = patched
-    engine_class._listen_port_patched = True
+def default_route_addresses() -> tuple[str | None, str | None]:
+    ipv4 = _probe_local_address(socket.AF_INET, ("1.1.1.1", 53))
+    if ipv4 and (ipv4.startswith("127.") or ipv4.startswith("0.")):
+        ipv4 = None
+    ipv6 = None
+    if socket.has_ipv6:
+        ipv6 = _probe_local_address(socket.AF_INET6, ("2606:4700:4700::1111", 53))
+        if ipv6 and (ipv6 == "::1" or ipv6.lower().startswith("fe80")):
+            ipv6 = None
+    return ipv4, ipv6
+
+
+def bind_default_interface_enabled() -> bool:
+    value = QSettings().value(BIND_DEFAULT_INTERFACE_KEY, True)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def set_bind_default_interface(enabled: bool) -> None:
+    settings = QSettings()
+    settings.setValue(BIND_DEFAULT_INTERFACE_KEY, bool(enabled))
+    settings.sync()
+
+
+def listen_interfaces(port: int, addresses: tuple | None = None) -> str:
+    """libtorrent listen_interfaces for the given port.
+
+    Listening on 0.0.0.0/[::] makes libtorrent open a socket, and announce to
+    every tracker, on every local address: VPN and Hyper-V/WSL adapters,
+    loopback and link-local IPv6 included, most of which cannot reach the
+    internet. By default only the address(es) of the default route are used.
+    """
+
+    port = max(1, min(65535, int(port)))
+    if bind_default_interface_enabled():
+        ipv4, ipv6 = addresses if addresses is not None else default_route_addresses()
+        parts = []
+        if ipv4:
+            parts.append(f"{ipv4}:{port}")
+        if ipv6:
+            parts.append(f"[{ipv6}]:{port}")
+        if parts:
+            return ",".join(parts)
+    return f"0.0.0.0:{port},[::]:{port}"
