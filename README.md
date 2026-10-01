@@ -26,6 +26,7 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 - Diagnostic Properties window with tracker, DHT, listen-port and recent libtorrent alert information
 - Seeding is disabled by policy
 - Session unchoke slots are set to `0`
+- BEP 6 "allowed fast" pieces are never offered (`allowed_fast_set_size = 0`), so choked peers have no path to request piece payload and are not disconnected for trying
 - The libtorrent local peer class is changed so LAN peers do not bypass unchoke-slot limits
 - **Release builds compile a patched libtorrent 2.1.1 in which `bt_peer_connection::write_piece()` no longer contains the code that queues BitTorrent PIECE payload bytes for transmission**
 - If that removed upload path is nevertheless entered, the patched libtorrent logs a build marker and disconnects the peer immediately

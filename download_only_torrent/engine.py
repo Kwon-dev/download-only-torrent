@@ -71,9 +71,10 @@ class TorrentEngine:
     Protocol control traffic (tracker/DHT/handshake/ACKs) is still required for
     BitTorrent to work. The guard here concerns BitTorrent piece payload data.
 
-    The session uses the fixed-slot choker with zero unchoke slots. Local peers
-    are forced to honor the same policy, and a payload counter guard immediately
-    aborts a torrent if any piece payload upload is observed.
+    The session uses the fixed-slot choker with zero unchoke slots and offers no
+    BEP 6 allowed-fast pieces. Local peers are forced to honor the same policy,
+    and a payload counter guard immediately aborts a torrent if any piece payload
+    upload is observed.
     """
 
     def __init__(self, config: AppConfig):
@@ -96,6 +97,11 @@ class TorrentEngine:
             "connections_limit": max(2, self.config.max_connections),
             "choking_algorithm": 0,
             "unchoke_slots_limit": 0,
+            # BEP 6 "allowed fast" lets peers request a few pieces while we keep
+            # them choked. Requests for those pieces bypass the zero-unchoke
+            # policy and reach the patched write_piece(), which disconnects the
+            # peer. Never offer the set, so interested peers stay connected.
+            "allowed_fast_set_size": 0,
             "user_agent": "DownloadOnlyTorrent/0.1.0",
             "announce_to_all_trackers": True,
             "announce_to_all_tiers": True,
