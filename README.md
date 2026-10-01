@@ -17,6 +17,7 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 - Shift/Ctrl/mouse-drag multi-row selection in the main list
 - Batch pause / resume / remove and keyboard shortcuts
 - Configurable download folder and download speed limit
+- Settings split into General and Advanced tabs; Advanced holds the peer strategies, interface binding, DHT/PEX/LSD/TCP/uTP, outstanding requests per peer (default 1500; libtorrent's is 500), peer connect timeout (default 7 s; libtorrent's is 15 s) and the extra tracker list
 - Configurable listen port; first launch automatically chooses a currently unused TCP/UDP port
 - Listens and announces only on the default-route address (not on VPN, Hyper-V/WSL or loopback adapters), following network changes; can be switched back to all interfaces
 - Status bar shows whether the listen port is reachable (incoming connections, UPnP/NAT-PMP mapping)

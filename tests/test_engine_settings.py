@@ -23,6 +23,9 @@ def test_session_enforces_download_only_policy(tmp_path):
         assert settings["peer_fingerprint"].startswith("-DO")
         assert settings["user_agent"].startswith("DownloadOnlyTorrent/")
         assert settings["listen_system_port_fallback"] is False
+        # Advanced defaults (libtorrent's own are 500 and 15 s).
+        assert settings["max_out_request_queue"] == 1500
+        assert settings["peer_connect_timeout"] == 7
     finally:
         close_engine(engine)
 
@@ -83,3 +86,16 @@ def test_default_route_probe_survives_disabled_address_family(monkeypatch):
     monkeypatch.setattr(port_config.socket, "socket", no_ipv6)
     ipv4, ipv6 = port_config.default_route_addresses()
     assert ipv6 is None
+
+
+def test_advanced_network_values_are_applied(tmp_path):
+    engine = make_engine(tmp_path, max_out_request_queue=3000, peer_connect_timeout=4)
+    try:
+        applied = engine.session.get_settings()
+        assert applied["max_out_request_queue"] == 3000
+        assert applied["peer_connect_timeout"] == 4
+        engine.config.max_out_request_queue = 800
+        engine.apply_config(engine.config)
+        assert engine.session.get_settings()["max_out_request_queue"] == 800
+    finally:
+        close_engine(engine)

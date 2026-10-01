@@ -180,6 +180,9 @@ class TorrentEngine:
             # 16 MiB of reads outstanding instead of 4 MiB.
             "hashing_threads": _hashing_threads(),
             "checking_mem_usage": 1024,
+            # Advanced settings (Settings > Advanced).
+            "max_out_request_queue": max(50, int(self.config.max_out_request_queue)),
+            "peer_connect_timeout": max(2, int(self.config.peer_connect_timeout)),
             "choking_algorithm": 0,
             "unchoke_slots_limit": 0,
             # BEP 6 "allowed fast" lets peers request a few pieces while we keep

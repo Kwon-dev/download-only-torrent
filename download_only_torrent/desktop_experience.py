@@ -8,8 +8,6 @@ import libtorrent as lt
 from PySide6.QtCore import QEvent, QObject, QSettings, QTimer
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
-    QFormLayout,
     QLabel,
     QMessageBox,
 )
@@ -50,43 +48,6 @@ def _close_to_tray_enabled(config=None) -> bool:
     return enabled
 
 
-def _peer_strategy_strings(language: str) -> dict[str, str]:
-    if language == "ko":
-        return {
-            "group": "피어 전략",
-            "large_pool": "대형 피어 풀 사용 (실험적)",
-            "large_tip": (
-                "전체 연결 한도를 약 1000개, 토렌트당 약 500개까지 넓히고 "
-                "피어 탐색/교체를 더 적극적으로 합니다. 공유기/NAT와 CPU 사용량이 "
-                "늘어날 수 있습니다."
-            ),
-            "seeder": "시더 우선 연결 (실험적)",
-            "seeder_tip": (
-                "연결 슬롯이 거의 찼을 때 받을 것이 없는 피어와 비시더부터 더 자주 "
-                "교체해 새 시더가 들어올 자리를 만들고, 끊어진 시더는 다시 연결합니다. "
-                "데이터를 보내고 있는 연결은 한꺼번에 끊지 않아 대형 피어 풀과 함께 "
-                "사용해도 됩니다."
-            ),
-        }
-    return {
-        "group": "Peer strategy",
-        "large_pool": "Use large peer pool (experimental)",
-        "large_tip": (
-            "Raises the global pool to about 1000 peers and each torrent to about "
-            "500, with more aggressive peer discovery/turnover. This can increase "
-            "router/NAT, CPU and memory usage."
-        ),
-        "seeder": "Prefer seeders (experimental)",
-        "seeder_tip": (
-            "When connection slots are nearly full, rotates out peers with nothing "
-            "to offer and non-seeders more often so new seeders can connect, and "
-            "reconnects seeders that dropped. Connections that are delivering data "
-            "are never torn down in bulk, so this is safe to combine with the "
-            "large peer pool."
-        ),
-    }
-
-
 def _install_close_to_tray_settings() -> None:
     if getattr(SettingsDialog, "_close_to_tray_extended", False):
         return
@@ -101,26 +62,8 @@ def _install_close_to_tray_settings() -> None:
         original_init(self, config, parent)
         self.minimize_tray.setChecked(_close_to_tray_enabled(config))
 
-        labels = _peer_strategy_strings(config.language)
-        self.large_peer_pool = QCheckBox(labels["large_pool"], self)
-        self.large_peer_pool.setChecked(_setting_bool(_LARGE_PEER_POOL_KEY))
-        self.large_peer_pool.setToolTip(labels["large_tip"])
-
-        self.seeder_preference = QCheckBox(labels["seeder"], self)
-        self.seeder_preference.setChecked(_setting_bool(_SEEDER_PREFERENCE_KEY))
-        self.seeder_preference.setToolTip(labels["seeder_tip"])
-
-        layout = self.layout()
-        form = layout.itemAt(0).layout() if layout and layout.count() else None
-        if isinstance(form, QFormLayout):
-            form.addRow(labels["group"], self.large_peer_pool)
-            form.addRow(labels["group"], self.seeder_preference)
-        self.resize(max(self.width(), 560), max(self.height(), 760))
-
     def extended_apply(self):
         close_to_tray = self.minimize_tray.isChecked()
-        large_peer_pool = self.large_peer_pool.isChecked()
-        seeder_preference = self.seeder_preference.isChecked()
 
         # Let the original settings code run without re-enabling the legacy
         # minimize-to-tray behavior.
@@ -131,8 +74,6 @@ def _install_close_to_tray_settings() -> None:
         settings = QSettings()
         settings.setValue(_CLOSE_TO_TRAY_KEY, close_to_tray)
         settings.setValue(_LEGACY_MINIMIZE_TO_TRAY_KEY, False)
-        settings.setValue(_LARGE_PEER_POOL_KEY, large_peer_pool)
-        settings.setValue(_SEEDER_PREFERENCE_KEY, seeder_preference)
         settings.sync()
         self.minimize_tray.setChecked(close_to_tray)
 

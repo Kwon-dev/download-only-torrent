@@ -23,9 +23,11 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTreeWidget,
@@ -34,7 +36,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import peer_strategy
 from .config import AppConfig
+from .port_config import bind_default_interface_enabled, set_bind_default_interface
 from .engine import TorrentEngine, TorrentFile
 from .utils import format_bytes, format_rate
 
@@ -123,6 +127,42 @@ TEXT = {
         "notify_complete": "Show completion notification",
         "theme": "Theme",
         "language": "Language",
+        "tab_general": "General",
+        "tab_advanced": "Advanced",
+        "section_peer_strategy": "Peer strategy",
+        "section_network": "Network",
+        "section_performance": "Performance",
+        "large_pool": "Use large peer pool",
+        "large_pool_tip": (
+            "Raises the global pool to about 1000 peers and each torrent to about "
+            "500, with more aggressive peer discovery/turnover. This can increase "
+            "router/NAT, CPU and memory usage."
+        ),
+        "seeder_pref": "Prefer seeders",
+        "seeder_pref_tip": (
+            "When connection slots are nearly full, rotates out peers with nothing "
+            "to offer and non-seeders more often so new seeders can connect, and "
+            "reconnects seeders that dropped. Safe to combine with the large peer pool."
+        ),
+        "bind_default": "Use only the network interface with internet access",
+        "bind_tip": (
+            "Listen and announce only on the address of the default route instead "
+            "of on every adapter (VPN, Hyper-V/WSL, loopback). Follows network "
+            "changes automatically. Turn off to listen on all interfaces."
+        ),
+        "request_queue": "Outstanding requests per peer",
+        "request_queue_tip": (
+            "How many 16 KiB block requests to keep in flight to each peer. Raise "
+            "it if diagnostics show 'max outstanding piece requests reached' for "
+            "fast peers. libtorrent's default is 500."
+        ),
+        "connect_timeout": "Peer connect timeout",
+        "connect_timeout_tip": (
+            "How long to wait for an outgoing connection. Most peers behind NAT "
+            "never answer; a shorter wait moves on to reachable peers sooner. "
+            "libtorrent's default is 15 s."
+        ),
+        "seconds_suffix": " s",
         "extra_trackers": "Extra trackers",
         "add_extra_trackers": "Add these public trackers to every non-private torrent",
         "extra_trackers_tip": (
@@ -195,6 +235,42 @@ TEXT = {
         "notify_complete": "다운로드 완료 알림 표시",
         "theme": "테마",
         "language": "언어",
+        "tab_general": "일반",
+        "tab_advanced": "고급",
+        "section_peer_strategy": "피어 전략",
+        "section_network": "네트워크",
+        "section_performance": "성능",
+        "large_pool": "대형 피어 풀 사용",
+        "large_pool_tip": (
+            "전체 연결 한도를 약 1000개, 토렌트당 약 500개까지 넓히고 "
+            "피어 탐색/교체를 더 적극적으로 합니다. 공유기/NAT와 CPU 사용량이 "
+            "늘어날 수 있습니다."
+        ),
+        "seeder_pref": "시더 우선 연결",
+        "seeder_pref_tip": (
+            "연결 슬롯이 거의 찼을 때 받을 것이 없는 피어와 비시더부터 더 자주 "
+            "교체해 새 시더가 들어올 자리를 만들고, 끊어진 시더는 다시 연결합니다. "
+            "대형 피어 풀과 함께 사용해도 됩니다."
+        ),
+        "bind_default": "인터넷에 연결된 네트워크 인터페이스만 사용",
+        "bind_tip": (
+            "모든 어댑터(VPN, Hyper-V/WSL, 루프백 등) 대신 기본 경로의 주소에서만 "
+            "수신하고 트래커에 공지합니다. 네트워크가 바뀌면 자동으로 따라갑니다. "
+            "끄면 모든 인터페이스에서 수신합니다."
+        ),
+        "request_queue": "피어당 동시 요청 수",
+        "request_queue_tip": (
+            "피어 한 명에게 미리 걸어두는 16KiB 블록 요청 수입니다. 진단에 "
+            "'max outstanding piece requests reached'가 보이면 올리세요. "
+            "libtorrent 기본값은 500입니다."
+        ),
+        "connect_timeout": "피어 연결 시간 초과",
+        "connect_timeout_tip": (
+            "연결을 시도할 때 응답을 기다리는 시간입니다. NAT 뒤의 피어는 대부분 "
+            "응답하지 않으므로, 짧게 하면 연결 가능한 피어로 더 빨리 넘어갑니다. "
+            "libtorrent 기본값은 15초입니다."
+        ),
+        "seconds_suffix": "초",
         "extra_trackers": "추가 트래커",
         "add_extra_trackers": "비공개가 아닌 모든 토렌트에 아래 공개 트래커 추가",
         "extra_trackers_tip": (
@@ -473,14 +549,44 @@ class MagnetMetadataDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
+    """Settings split into a General tab and an Advanced tab.
+
+    Extensions add rows to self.general_form or self.advanced_form.
+    """
+
     def __init__(self, config: AppConfig, parent=None):
         super().__init__(parent)
         self.config = config
         lang = config.language
         self.setWindowTitle(tr(lang, "settings"))
-        self.resize(520, 560)
+        self.resize(600, 640)
         layout = QVBoxLayout(self)
-        form = QFormLayout()
+
+        self.tabs = QTabWidget(self)
+        general_page = QWidget()
+        self.general_form = QFormLayout(general_page)
+        advanced_page = QWidget()
+        self.advanced_form = QFormLayout(advanced_page)
+        advanced_scroll = QScrollArea()
+        advanced_scroll.setWidgetResizable(True)
+        advanced_scroll.setWidget(advanced_page)
+        self.tabs.addTab(general_page, tr(lang, "tab_general"))
+        self.tabs.addTab(advanced_scroll, tr(lang, "tab_advanced"))
+        layout.addWidget(self.tabs, 1)
+
+        self._build_general(config, lang)
+        self._build_advanced(config, lang)
+
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        layout.addWidget(box)
+
+    def _build_general(self, config: AppConfig, lang: str) -> None:
+        form = self.general_form
 
         path_widget = QWidget()
         path_layout = QHBoxLayout(path_widget)
@@ -502,25 +608,6 @@ class SettingsDialog(QDialog):
         self.max_connections.setRange(2, 5000)
         self.max_connections.setValue(config.max_connections)
         form.addRow(tr(lang, "max_peers"), self.max_connections)
-
-        self.dht = QCheckBox(tr(lang, "enable_dht"))
-        self.dht.setChecked(config.enable_dht)
-        self.pex = QCheckBox(tr(lang, "enable_pex"))
-        self.pex.setChecked(config.enable_pex)
-        self.lsd = QCheckBox(tr(lang, "enable_lsd"))
-        self.lsd.setChecked(config.enable_lsd)
-        self.tcp = QCheckBox(tr(lang, "enable_tcp"))
-        self.tcp.setChecked(config.enable_tcp)
-        self.utp = QCheckBox(tr(lang, "enable_utp"))
-        self.utp.setChecked(config.enable_utp)
-        for label, widget in (
-            ("DHT", self.dht),
-            ("PEX", self.pex),
-            ("LSD", self.lsd),
-            ("TCP", self.tcp),
-            ("uTP", self.utp),
-        ):
-            form.addRow(label, widget)
 
         self.delete_source = QCheckBox(tr(lang, "delete_source"))
         self.delete_source.setChecked(config.delete_torrent_source)
@@ -558,26 +645,76 @@ class SettingsDialog(QDialog):
         self.language.setCurrentIndex(index if index >= 0 else 0)
         form.addRow(tr(lang, "language"), self.language)
 
+    def _section(self, title: str) -> None:
+        label = QLabel(f"<b>{title}</b>")
+        label.setContentsMargins(0, 8, 0, 0)
+        self.advanced_form.addRow(label)
+
+    def _build_advanced(self, config: AppConfig, lang: str) -> None:
+        form = self.advanced_form
+
+        self._section(tr(lang, "section_peer_strategy"))
+        self.large_peer_pool = QCheckBox(tr(lang, "large_pool"))
+        self.large_peer_pool.setChecked(peer_strategy.large_pool_enabled())
+        self.large_peer_pool.setToolTip(tr(lang, "large_pool_tip"))
+        self.seeder_preference = QCheckBox(tr(lang, "seeder_pref"))
+        self.seeder_preference.setChecked(peer_strategy.seeder_preference_enabled())
+        self.seeder_preference.setToolTip(tr(lang, "seeder_pref_tip"))
+        form.addRow(self.large_peer_pool)
+        form.addRow(self.seeder_preference)
+
+        self._section(tr(lang, "section_network"))
+        self.bind_default_interface = QCheckBox(tr(lang, "bind_default"))
+        self.bind_default_interface.setChecked(bind_default_interface_enabled())
+        self.bind_default_interface.setToolTip(tr(lang, "bind_tip"))
+        form.addRow(self.bind_default_interface)
+
+        self.dht = QCheckBox(tr(lang, "enable_dht"))
+        self.dht.setChecked(config.enable_dht)
+        self.pex = QCheckBox(tr(lang, "enable_pex"))
+        self.pex.setChecked(config.enable_pex)
+        self.lsd = QCheckBox(tr(lang, "enable_lsd"))
+        self.lsd.setChecked(config.enable_lsd)
+        self.tcp = QCheckBox(tr(lang, "enable_tcp"))
+        self.tcp.setChecked(config.enable_tcp)
+        self.utp = QCheckBox(tr(lang, "enable_utp"))
+        self.utp.setChecked(config.enable_utp)
+        for label, widget in (
+            ("DHT", self.dht),
+            ("PEX", self.pex),
+            ("LSD", self.lsd),
+            ("TCP", self.tcp),
+            ("uTP", self.utp),
+        ):
+            form.addRow(label, widget)
+
+        self._section(tr(lang, "section_performance"))
+        self.max_out_request_queue = QSpinBox()
+        self.max_out_request_queue.setRange(50, 10_000)
+        self.max_out_request_queue.setSingleStep(250)
+        self.max_out_request_queue.setValue(config.max_out_request_queue)
+        self.max_out_request_queue.setToolTip(tr(lang, "request_queue_tip"))
+        form.addRow(tr(lang, "request_queue"), self.max_out_request_queue)
+
+        self.peer_connect_timeout = QSpinBox()
+        self.peer_connect_timeout.setRange(2, 60)
+        self.peer_connect_timeout.setSuffix(tr(lang, "seconds_suffix"))
+        self.peer_connect_timeout.setValue(config.peer_connect_timeout)
+        self.peer_connect_timeout.setToolTip(tr(lang, "connect_timeout_tip"))
+        form.addRow(tr(lang, "connect_timeout"), self.peer_connect_timeout)
+
+        self._section(tr(lang, "extra_trackers"))
         self.add_extra_trackers = QCheckBox(tr(lang, "add_extra_trackers"))
         self.add_extra_trackers.setChecked(config.add_extra_trackers)
         self.add_extra_trackers.setToolTip(tr(lang, "extra_trackers_tip"))
         self.extra_trackers = QPlainTextEdit(config.extra_trackers)
         self.extra_trackers.setToolTip(tr(lang, "extra_trackers_tip"))
-        self.extra_trackers.setFixedHeight(96)
+        self.extra_trackers.setFixedHeight(110)
         self.extra_trackers.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.add_extra_trackers.toggled.connect(self.extra_trackers.setEnabled)
         self.extra_trackers.setEnabled(config.add_extra_trackers)
-        form.addRow(tr(lang, "extra_trackers"), self.add_extra_trackers)
-        form.addRow("", self.extra_trackers)
-
-        layout.addLayout(form)
-        box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        box.accepted.connect(self.accept)
-        box.rejected.connect(self.reject)
-        layout.addWidget(box)
+        form.addRow(self.add_extra_trackers)
+        form.addRow(self.extra_trackers)
 
     def _browse(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -606,7 +743,16 @@ class SettingsDialog(QDialog):
         self.config.language_user_selected = True
         self.config.add_extra_trackers = self.add_extra_trackers.isChecked()
         self.config.extra_trackers = self.extra_trackers.toPlainText().strip()
+        self.config.max_out_request_queue = self.max_out_request_queue.value()
+        self.config.peer_connect_timeout = self.peer_connect_timeout.value()
         self.config.save()
+
+        # Kept in QSettings by their own modules; saved before the caller
+        # re-applies the engine settings.
+        peer_strategy.set_options(
+            self.large_peer_pool.isChecked(), self.seeder_preference.isChecked()
+        )
+        set_bind_default_interface(self.bind_default_interface.isChecked())
 
 
 class MainWindow(QMainWindow):
