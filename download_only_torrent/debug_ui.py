@@ -626,6 +626,13 @@ def session_diagnostics(window) -> str:
         for entry in unrestored:
             add(f"  - {entry.get('source', '?')}")
     add(f"download (payload): {format_rate(total_rate)}")
+    meter = getattr(window, "_rate_meter", None)
+    if meter is not None:
+        minutes = int(meter.elapsed // 60)
+        add(
+            f"average since start: {format_rate(int(meter.average))} "
+            f"over {minutes} min ({format_bytes(int(meter.total_bytes))})"
+        )
     add(_format_peer_summary(_peer_summary(all_peers)))
     add("")
 

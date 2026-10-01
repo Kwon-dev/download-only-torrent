@@ -14,6 +14,7 @@ from download_only_torrent.debug_ui import install_debug_ui
 from download_only_torrent.desktop_experience import install_desktop_experience
 from download_only_torrent.engine import TorrentEngine
 from download_only_torrent.network_ui import install_network_ui
+from download_only_torrent.peer_panel import install_peer_panel
 from download_only_torrent.runtime_fix import refresh_discovery
 from download_only_torrent.sorting_ui import install_sorting_ui
 from download_only_torrent.ui import MainWindow, apply_theme
@@ -74,6 +75,7 @@ def build_main_window(app: QApplication, icon=None) -> MainWindow:
     install_debug_ui(window)
     install_controls_ui(window)
     install_sorting_ui(window)
+    install_peer_panel(window)
     return window
 
 

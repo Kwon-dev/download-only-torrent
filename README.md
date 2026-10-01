@@ -20,7 +20,8 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 - Settings split into General and Advanced tabs; Advanced holds the peer strategies, interface binding, DHT/PEX/LSD/TCP/uTP, outstanding requests per peer (default 1500; libtorrent's is 500), peer connect timeout (default 7 s; libtorrent's is 15 s) and the extra tracker list
 - Configurable listen port; first launch automatically chooses a currently unused TCP/UDP port
 - Listens and announces only on the default-route address (not on VPN, Hyper-V/WSL or loopback adapters), following network changes; can be switched back to all interfaces
-- Status bar shows whether the listen port is reachable (incoming connections, UPnP/NAT-PMP mapping)
+- Status bar shows whether the listen port is reachable (incoming connections, UPnP/NAT-PMP mapping), the average download rate since start and how many peer connections are still being set up
+- Peer pane under the download list (like µTorrent's): every peer of the selected download with client, status (receiving / choking us / unchoked but idle / connecting), flags, progress, download speed, amount received and discovery source; sortable, resizable, remembered between launches
 - Optional extra public trackers added to every non-private torrent (editable list, on by default; never added to private torrents)
 - DHT, PEX, LSD, TCP and uTP toggles
 - Active download/torrent queue limits disabled so the app does not impose an artificial simultaneous-download cap
