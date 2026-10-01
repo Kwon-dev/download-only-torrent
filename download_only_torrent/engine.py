@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,52 @@ class TorrentTask:
     magnet_uri: str | None = None
     initial_payload_upload: int = 0
     paused: bool = False
+    key: str | None = None
+
+
+def _hash_key(info_hashes) -> str | None:
+    """Stable file-name-safe key for a torrent: the v1 hash when it has one.
+
+    get_best() would prefer v2 for hybrid torrents, but most magnet links only
+    carry the v1 btih, so restoring from the link must find the same key.
+    """
+
+    try:
+        key = str(info_hashes.v1) if info_hashes.has_v1() else str(info_hashes.get_best())
+    except Exception:
+        key = str(info_hashes) if info_hashes is not None else ""
+    return key if key and key.strip("0") else None
+
+
+def handle_key(handle: object) -> str | None:
+    try:
+        return _hash_key(handle.info_hashes())
+    except Exception:
+        try:
+            return _hash_key(handle.info_hash())
+        except Exception:
+            return None
+
+
+def _resume_flags():
+    flags = 0
+    for name in ("save_info_dict", "only_if_modified"):
+        value = getattr(lt.torrent_handle, name, None)
+        if value is not None:
+            flags |= value
+    return flags
+
+
+def _final_resume_flags():
+    flags = 0
+    for name in ("save_info_dict", "flush_disk_cache"):
+        value = getattr(lt.torrent_handle, name, None)
+        if value is not None:
+            flags |= value
+    return flags
+
+
+_RESUME_SAVE_INTERVAL_SECONDS = 60.0
 
 
 @dataclass(slots=True)
@@ -71,9 +118,10 @@ class TorrentEngine:
     Protocol control traffic (tracker/DHT/handshake/ACKs) is still required for
     BitTorrent to work. The guard here concerns BitTorrent piece payload data.
 
-    The session uses the fixed-slot choker with zero unchoke slots. Local peers
-    are forced to honor the same policy, and a payload counter guard immediately
-    aborts a torrent if any piece payload upload is observed.
+    The session uses the fixed-slot choker with zero unchoke slots and offers no
+    BEP 6 allowed-fast pieces. Local peers are forced to honor the same policy,
+    and a payload counter guard immediately aborts a torrent if any piece payload
+    upload is observed.
     """
 
     def __init__(self, config: AppConfig):
@@ -82,6 +130,13 @@ class TorrentEngine:
         self.pending_magnets: dict[str, PendingMagnet] = {}
         self.restored_magnets: dict[str, RestoredMagnet] = {}
         self.tasks: dict[str, TorrentTask] = {}
+        # Saved entries that could not be restored (for example, the original
+        # .torrent file is gone). They stay in session.json so they are not
+        # silently lost, and the UI reports them.
+        self.unrestored: list[dict[str, object]] = []
+        self._alert_listeners: list = []
+        self._last_resume_save = time.monotonic()
+        self._ensure_resume_alerts()
         self._configure_local_peer_class()
         self._restore_tasks()
 
@@ -96,6 +151,11 @@ class TorrentEngine:
             "connections_limit": max(2, self.config.max_connections),
             "choking_algorithm": 0,
             "unchoke_slots_limit": 0,
+            # BEP 6 "allowed fast" lets peers request a few pieces while we keep
+            # them choked. Requests for those pieces bypass the zero-unchoke
+            # policy and reach the patched write_piece(), which disconnects the
+            # peer. Never offer the set, so interested peers stay connected.
+            "allowed_fast_set_size": 0,
             "user_agent": "DownloadOnlyTorrent/0.1.0",
             "announce_to_all_trackers": True,
             "announce_to_all_tiers": True,
@@ -193,6 +253,7 @@ class TorrentEngine:
             None,
             magnet_uri=pending.uri,
         )
+        self._request_resume_save(pending.handle)
         self._persist_tasks()
         return task_id
 
@@ -205,9 +266,29 @@ class TorrentEngine:
         persist: bool = True,
     ) -> str:
         ti = lt.torrent_info(torrent_path)
+        self._keep_torrent_copy(torrent_path, _hash_key(ti.info_hashes()))
+        return self._add_with_info(
+            ti,
+            save_path,
+            selected_files,
+            torrent_path,
+            persist=persist,
+        )
+
+    def _add_with_info(
+        self,
+        ti,
+        save_path: str,
+        selected_files: Iterable[int],
+        source_torrent_path: str | None,
+        *,
+        magnet_uri: str | None = None,
+        resume=None,
+        persist: bool = True,
+    ) -> str:
         files = self._files_from_info(ti)
         selected = self._normalize_selection(selected_files, len(files))
-        params = lt.add_torrent_params()
+        params = resume if resume is not None else lt.add_torrent_params()
         params.ti = ti
         params.save_path = save_path
         params.max_connections = max(2, self.config.max_connections)
@@ -227,7 +308,8 @@ class TorrentEngine:
             selected,
             files,
             save_path,
-            torrent_path,
+            source_torrent_path,
+            magnet_uri=magnet_uri,
         )
         if persist:
             self._persist_tasks()
@@ -237,6 +319,7 @@ class TorrentEngine:
         task = self.tasks[task_id]
         task.handle.pause()
         task.paused = True
+        self._request_resume_save(task.handle)
         self._persist_tasks()
 
     def resume(self, task_id: str) -> None:
@@ -254,6 +337,7 @@ class TorrentEngine:
         task = self.tasks.pop(task_id, None)
         if task is None:
             return
+        self.discard_saved_state(task.key)
         try:
             task.handle.pause()
             task.handle.clear_peers()
@@ -266,7 +350,14 @@ class TorrentEngine:
         if persist:
             self._persist_tasks()
 
+    def add_alert_listener(self, callback) -> None:
+        """Receive every alert batch; the engine is the only alert consumer."""
+
+        self._alert_listeners.append(callback)
+
     def poll(self) -> list[TaskSnapshot]:
+        self._drain_alerts()
+        self._save_resume_periodically()
         self._process_restored_magnets()
         snapshots: list[TaskSnapshot] = []
         for task_id, task in list(self.tasks.items()):
@@ -377,6 +468,7 @@ class TorrentEngine:
             source_torrent_path,
             magnet_uri,
             int(getattr(status, "total_payload_upload", 0)),
+            key=handle_key(handle),
         )
         return task_id
 
@@ -384,6 +476,7 @@ class TorrentEngine:
         task = self.tasks.pop(task_id, None)
         if task is None:
             return
+        self.discard_saved_state(task.key)
         try:
             task.handle.pause()
             task.handle.clear_peers()
@@ -444,7 +537,7 @@ class TorrentEngine:
             except Exception:
                 pass
 
-    def _state_file(self) -> Path:
+    def _data_dir(self) -> Path:
         if os.name == "nt":
             base = Path(
                 os.environ.get(
@@ -456,7 +549,162 @@ class TorrentEngine:
         else:
             folder = Path.home() / ".download-only-torrent"
         folder.mkdir(parents=True, exist_ok=True)
-        return folder / "session.json"
+        return folder
+
+    def _state_file(self) -> Path:
+        return self._data_dir() / "session.json"
+
+    def resume_path(self, key: str) -> Path:
+        return self._data_dir() / "resume" / f"{key}.fastresume"
+
+    def torrent_copy_path(self, key: str) -> Path:
+        return self._data_dir() / "torrents" / f"{key}.torrent"
+
+    @staticmethod
+    def _write_atomic(target: Path, data: bytes) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_suffix(target.suffix + ".tmp")
+        try:
+            temp.write_bytes(data)
+            temp.replace(target)
+        except OSError:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _keep_torrent_copy(self, torrent_path: str, key: str | None) -> None:
+        """Keep a private copy so restore does not depend on the original file.
+
+        Browsers often save .torrent files into cache folders that they clean
+        up on their own, and the app itself may delete the original after a
+        download completes.
+        """
+
+        if not key:
+            return
+        target = self.torrent_copy_path(key)
+        try:
+            if Path(torrent_path).resolve() == target.resolve():
+                return
+            self._write_atomic(target, Path(torrent_path).read_bytes())
+        except OSError:
+            pass
+
+    def discard_saved_state(self, key: str | None) -> None:
+        if not key:
+            return
+        for path in (self.resume_path(key), self.torrent_copy_path(key)):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _load_resume(self, key: str | None):
+        if not key:
+            return None
+        path = self.resume_path(key)
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return None
+        try:
+            return lt.read_resume_data(data)
+        except Exception:
+            return None
+
+    def _ensure_resume_alerts(self) -> None:
+        try:
+            current = int(self.session.get_settings().get("alert_mask", 0))
+            needed = int(lt.alert_category.error) | int(lt.alert_category.storage)
+            self.session.apply_settings({"alert_mask": current | needed})
+        except Exception:
+            pass
+
+    def _request_resume_save(self, handle: object, flags=None) -> None:
+        try:
+            if handle.status().has_metadata:
+                handle.save_resume_data(_resume_flags() if flags is None else flags)
+        except Exception:
+            pass
+
+    def _save_resume_periodically(self) -> None:
+        now = time.monotonic()
+        if now - self._last_resume_save < _RESUME_SAVE_INTERVAL_SECONDS:
+            return
+        self._last_resume_save = now
+        for task in list(self.tasks.values()):
+            try:
+                if task.handle.status().need_save_resume:
+                    self._request_resume_save(task.handle)
+            except Exception:
+                continue
+
+    def _known_key(self, key: str | None) -> bool:
+        return bool(key) and any(task.key == key for task in self.tasks.values())
+
+    def _handle_resume_alert(self, alert) -> str | None:
+        """Write resume data for a live task. Returns the torrent key."""
+
+        what = alert.what()
+        if what not in ("save_resume_data", "save_resume_data_failed"):
+            return None
+        key = handle_key(alert.handle)
+        # A late reply for a torrent that was removed meanwhile must not
+        # recreate its file.
+        if what == "save_resume_data" and self._known_key(key):
+            try:
+                data = lt.write_resume_data_buf(alert.params)
+            except Exception:
+                data = None
+            if data:
+                self._write_atomic(self.resume_path(key), bytes(data))
+        return key
+
+    def _drain_alerts(self) -> None:
+        try:
+            alerts = self.session.pop_alerts()
+        except Exception:
+            return
+        for alert in alerts:
+            try:
+                self._handle_resume_alert(alert)
+            except Exception:
+                continue
+        for listener in list(self._alert_listeners):
+            try:
+                listener(alerts)
+            except Exception:
+                continue
+
+    def save_all_resume_data(self, timeout: float = 10.0) -> None:
+        """Flush resume data for every task before the app exits."""
+
+        self._drain_alerts()
+        outstanding: set[str] = set()
+        for task in list(self.tasks.values()):
+            try:
+                if not task.key or not task.handle.status().has_metadata:
+                    continue
+                task.handle.save_resume_data(_final_resume_flags())
+                outstanding.add(task.key)
+            except Exception:
+                continue
+
+        deadline = time.monotonic() + timeout
+        while outstanding and time.monotonic() < deadline:
+            try:
+                self.session.wait_for_alert(200)
+                alerts = self.session.pop_alerts()
+            except Exception:
+                break
+            for alert in alerts:
+                try:
+                    key = self._handle_resume_alert(alert)
+                except Exception:
+                    continue
+                if key:
+                    outstanding.discard(key)
 
     def _persist_tasks(self) -> None:
         data: list[dict[str, object]] = []
@@ -467,6 +715,7 @@ class TorrentEngine:
                     "source": task.magnet_uri
                     if task.magnet_uri
                     else task.source_torrent_path,
+                    "info_hash": task.key,
                     "save_path": task.save_path,
                     "selected_files": list(task.selected_files),
                     "paused": task.paused,
@@ -482,6 +731,7 @@ class TorrentEngine:
                     "paused": pending.paused,
                 }
             )
+        data.extend(self.unrestored)
 
         target = self._state_file()
         temp = target.with_suffix(".tmp")
@@ -527,24 +777,63 @@ class TorrentEngine:
 
             try:
                 if kind == "torrent":
-                    if not Path(source).is_file():
-                        continue
-                    task_id = self.add_torrent_file(
-                        source,
-                        save_path,
-                        selected,
-                        persist=False,
+                    restored = self._restore_torrent(
+                        entry, source, save_path, selected, paused
                     )
-                    if paused:
-                        task = self.tasks[task_id]
-                        task.handle.pause()
-                        task.paused = True
                 elif kind == "magnet" and source.lower().startswith("magnet:?"):
-                    self._restore_magnet(
+                    restored = self._restore_magnet(
                         source, save_path, selected, paused
                     )
+                else:
+                    restored = False
             except Exception:
-                continue
+                restored = False
+            if not restored:
+                self.unrestored.append(entry)
+
+    def _restore_torrent(
+        self,
+        entry: dict,
+        source: str,
+        save_path: str,
+        selected: tuple[int, ...],
+        paused: bool,
+    ) -> bool:
+        key = str(entry.get("info_hash") or "") or None
+        if key is None and Path(source).is_file():
+            try:
+                key = _hash_key(lt.torrent_info(source).info_hashes())
+            except Exception:
+                key = None
+
+        resume = self._load_resume(key)
+        ti = getattr(resume, "ti", None) if resume is not None else None
+        if ti is None:
+            for candidate in (
+                self.torrent_copy_path(key) if key else None,
+                Path(source),
+            ):
+                if candidate is not None and candidate.is_file():
+                    ti = lt.torrent_info(str(candidate))
+                    break
+        if ti is None:
+            return False
+
+        if Path(source).is_file():
+            self._keep_torrent_copy(source, key)
+        task_id = self._add_with_info(
+            ti,
+            save_path,
+            selected,
+            source,
+            resume=resume,
+            persist=False,
+        )
+        if paused:
+            task = self.tasks[task_id]
+            task.handle.pause()
+            task.paused = True
+        return True
 
     def _restore_magnet(
         self,
@@ -552,8 +841,27 @@ class TorrentEngine:
         save_path: str,
         selected: tuple[int, ...],
         paused: bool,
-    ) -> None:
+    ) -> bool:
         params = lt.parse_magnet_uri(uri)
+        resume = self._load_resume(_hash_key(params.info_hashes))
+        ti = getattr(resume, "ti", None) if resume is not None else None
+        if ti is not None:
+            # Saved metadata: no need to wait for peers to send it again.
+            task_id = self._add_with_info(
+                ti,
+                save_path,
+                selected,
+                None,
+                magnet_uri=uri,
+                resume=resume,
+                persist=False,
+            )
+            if paused:
+                task = self.tasks[task_id]
+                task.handle.pause()
+                task.paused = True
+            return True
+
         params.save_path = save_path
         params.max_connections = max(2, self.config.max_connections)
         params.flags |= lt.torrent_flags.default_dont_download
@@ -570,6 +878,7 @@ class TorrentEngine:
         self.restored_magnets[token] = RestoredMagnet(
             token, uri, save_path, selected, paused
         )
+        return True
 
     def _process_restored_magnets(self) -> None:
         changed = False
@@ -604,6 +913,7 @@ class TorrentEngine:
                     None,
                     magnet_uri=restored.uri,
                 )
+                self._request_resume_save(pending.handle)
                 if restored.paused:
                     task = self.tasks[task_id]
                     task.handle.pause()

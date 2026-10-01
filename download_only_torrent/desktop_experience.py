@@ -5,7 +5,13 @@ from pathlib import Path
 
 import libtorrent as lt
 from PySide6.QtCore import QEvent, QObject, QSettings, QTimer
-from PySide6.QtWidgets import QApplication, QCheckBox, QFormLayout, QLabel
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QFormLayout,
+    QLabel,
+    QMessageBox,
+)
 
 from .network_ui import _show_one_torrent_dialog
 from .ui import SettingsDialog, TEXT
@@ -23,8 +29,17 @@ _LARGE_POOL_CONNECTION_SPEED = 80
 _LARGE_POOL_NUM_WANT = 500
 _LARGE_POOL_MAX_PEX_PEERS = 200
 
-_SEEDER_PRUNE_INTERVAL_SECONDS = 30.0
-_SEEDER_PRUNE_MIN_SEEDS = 2
+# Peer turnover (percent of peers dropped, pool fill cutoff percent, interval
+# seconds). libtorrent drops uninteresting peers first, then non-seeds, then the
+# slowest senders, and only when it has new candidates to replace them with.
+_DEFAULT_TURNOVER = (4, 90, 300)
+_LARGE_POOL_TURNOVER = (10, 80, 60)
+_SEEDER_TURNOVER = (10, 80, 90)
+_LARGE_POOL_SEEDER_TURNOVER = (15, 75, 45)
+
+_SEEDER_RECONNECT_INTERVAL_SECONDS = 60.0
+_SEEDER_MEMORY_SECONDS = 15 * 60.0
+_SEEDER_MEMORY_MAX = 200
 
 
 def _as_bool(value: object) -> bool:
@@ -35,6 +50,23 @@ def _as_bool(value: object) -> bool:
 
 def _setting_bool(key: str, default: bool = False) -> bool:
     return _as_bool(QSettings().value(key, default))
+
+
+def _turnover_profile(large_pool: bool, prefer_seeders: bool) -> tuple[int, int, int]:
+    """Pick how aggressively libtorrent rotates peers out of a full pool.
+
+    Rotating weak connections lets the large pool spend its extra sockets on
+    discovery, and lets the seeder preference free slots for new seeders without
+    tearing down the connections that are already delivering data.
+    """
+
+    if large_pool and prefer_seeders:
+        return _LARGE_POOL_SEEDER_TURNOVER
+    if large_pool:
+        return _LARGE_POOL_TURNOVER
+    if prefer_seeders:
+        return _SEEDER_TURNOVER
+    return _DEFAULT_TURNOVER
 
 
 def install_engine_concurrency_fix(engine_cls) -> None:
@@ -60,7 +92,8 @@ def install_engine_concurrency_fix(engine_cls) -> None:
             }
         )
 
-        if _setting_bool(_LARGE_PEER_POOL_KEY):
+        large_pool = _setting_bool(_LARGE_PEER_POOL_KEY)
+        if large_pool:
             settings.update(
                 {
                     "connections_limit": max(
@@ -70,12 +103,6 @@ def install_engine_concurrency_fix(engine_cls) -> None:
                     "connection_speed": _LARGE_POOL_CONNECTION_SPEED,
                     "num_want": _LARGE_POOL_NUM_WANT,
                     "max_pex_peers": _LARGE_POOL_MAX_PEX_PEERS,
-                    # Rotate weak connections more often when the expanded pool
-                    # is full, so the extra sockets are used for discovery rather
-                    # than keeping dead/slow peers indefinitely.
-                    "peer_turnover": 10,
-                    "peer_turnover_cutoff": 80,
-                    "peer_turnover_interval": 60,
                 }
             )
         else:
@@ -86,11 +113,19 @@ def install_engine_concurrency_fix(engine_cls) -> None:
                     "connection_speed": 30,
                     "num_want": 200,
                     "max_pex_peers": 50,
-                    "peer_turnover": 4,
-                    "peer_turnover_cutoff": 90,
-                    "peer_turnover_interval": 300,
                 }
             )
+
+        turnover, cutoff, interval = _turnover_profile(
+            large_pool, _setting_bool(_SEEDER_PREFERENCE_KEY)
+        )
+        settings.update(
+            {
+                "peer_turnover": turnover,
+                "peer_turnover_cutoff": cutoff,
+                "peer_turnover_interval": interval,
+            }
+        )
         return settings
 
     def kick_discovery(self, handle):
@@ -141,9 +176,10 @@ def _peer_strategy_strings(language: str) -> dict[str, str]:
             ),
             "seeder": "시더 우선 연결 (실험적)",
             "seeder_tip": (
-                "연결된 시더가 2개 이상 확인되면 주기적으로 비시더 연결을 정리하고 "
-                "확인된 시더를 다시 연결합니다. 시더가 부족하면 다운로드 정지를 "
-                "피하기 위해 일반 피어도 유지합니다."
+                "연결 슬롯이 거의 찼을 때 받을 것이 없는 피어와 비시더부터 더 자주 "
+                "교체해 새 시더가 들어올 자리를 만들고, 끊어진 시더는 다시 연결합니다. "
+                "데이터를 보내고 있는 연결은 한꺼번에 끊지 않아 대형 피어 풀과 함께 "
+                "사용해도 됩니다."
             ),
         }
     return {
@@ -156,9 +192,11 @@ def _peer_strategy_strings(language: str) -> dict[str, str]:
         ),
         "seeder": "Prefer seeders (experimental)",
         "seeder_tip": (
-            "When at least two connected seeders are known, periodically clears "
-            "non-seeder connections and reconnects the known seeders. Mixed peers "
-            "are retained when too few seeders are available to avoid stalling."
+            "When connection slots are nearly full, rotates out peers with nothing "
+            "to offer and non-seeders more often so new seeders can connect, and "
+            "reconnects seeders that dropped. Connections that are delivering data "
+            "are never torn down in bulk, so this is safe to combine with the "
+            "large peer pool."
         ),
     }
 
@@ -287,17 +325,17 @@ def _install_drag_and_drop(window) -> None:
     window._desktop_event_filter = event_filter
 
 
-def _peer_is_seed(peer) -> bool:
+def _peer_has_flag(peer, name: str) -> bool:
     peer_type = getattr(lt, "peer_info", None)
-    seed_flag = getattr(peer_type, "seed", None) if peer_type is not None else None
+    flag = getattr(peer_type, name, None) if peer_type is not None else None
     flags = getattr(peer, "flags", None)
-    if seed_flag is None or flags is None:
+    if flag is None or flags is None:
         return False
     try:
-        return bool(flags & seed_flag)
+        return bool(flags & flag)
     except Exception:
         try:
-            return bool(int(flags) & int(seed_flag))
+            return bool(int(flags) & int(flag))
         except Exception:
             return False
 
@@ -317,26 +355,30 @@ def _peer_endpoint(peer):
 
 
 def _install_seeder_preference(window) -> None:
-    """Periodically retain known seeders when the optional preference is enabled.
+    """Reconnect seeders that dropped while the optional preference is enabled.
 
-    libtorrent exposes peer classification and bulk peer-list clearing, but not a
-    portable per-peer disconnect in the Python torrent_handle API. To avoid
-    repeatedly tearing down good connections, this policy runs at most once per
-    torrent every 30 seconds and only when at least two seeders are already known.
+    Freeing slots for seeders is left to libtorrent's peer turnover (see
+    _turnover_profile), which disconnects a few of the least useful peers at a
+    time and only when replacement candidates exist. This timer only adds
+    connections: it remembers seeders we dialed ourselves (their port is their
+    listen port, so they can be dialed again) and reconnects them while the
+    torrent has free slots. It never clears the peer list, so it does not undo
+    the large peer pool's discovery work.
     """
 
-    last_prune: dict[str, float] = {}
+    # task_id -> {endpoint key: (endpoint, last seen as connected seed)}
+    known_seeds: dict[str, dict[str, tuple[object, float]]] = {}
+    last_reconnect: dict[str, float] = {}
 
     def apply_preference() -> None:
         if not _setting_bool(_SEEDER_PREFERENCE_KEY):
-            last_prune.clear()
+            known_seeds.clear()
+            last_reconnect.clear()
             return
 
         now = time.monotonic()
         for task_id, task in list(window.engine.tasks.items()):
             if bool(getattr(task, "paused", False)):
-                continue
-            if now - last_prune.get(task_id, 0.0) < _SEEDER_PRUNE_INTERVAL_SECONDS:
                 continue
 
             try:
@@ -345,50 +387,67 @@ def _install_seeder_preference(window) -> None:
                     continue
 
                 peers = list(task.handle.get_peer_info())
-                seed_endpoints = []
-                non_seed_count = 0
-                seen = set()
-
+                connected = set()
+                memory = known_seeds.setdefault(task_id, {})
                 for peer in peers:
-                    if _peer_is_seed(peer):
-                        endpoint = _peer_endpoint(peer)
-                        if endpoint is None:
-                            continue
-                        key = repr(endpoint)
-                        if key not in seen:
-                            seen.add(key)
-                            seed_endpoints.append(endpoint)
-                    else:
-                        non_seed_count += 1
+                    endpoint = _peer_endpoint(peer)
+                    if endpoint is None:
+                        continue
+                    key = repr(endpoint)
+                    connected.add(key)
+                    if _peer_has_flag(peer, "seed") and _peer_has_flag(
+                        peer, "outgoing_connection"
+                    ):
+                        memory[key] = (endpoint, now)
+
+                for key, (_, seen) in list(memory.items()):
+                    if now - seen > _SEEDER_MEMORY_SECONDS:
+                        memory.pop(key, None)
+                if len(memory) > _SEEDER_MEMORY_MAX:
+                    newest = sorted(
+                        memory.items(), key=lambda item: item[1][1], reverse=True
+                    )
+                    memory.clear()
+                    memory.update(newest[:_SEEDER_MEMORY_MAX])
 
                 if (
-                    len(seed_endpoints) < _SEEDER_PRUNE_MIN_SEEDS
-                    or non_seed_count == 0
+                    now - last_reconnect.get(task_id, 0.0)
+                    < _SEEDER_RECONNECT_INTERVAL_SECONDS
                 ):
                     continue
+                last_reconnect[task_id] = now
 
-                task.handle.clear_peers()
-                for endpoint in seed_endpoints:
+                try:
+                    free_slots = int(task.handle.max_connections()) - len(peers)
+                except Exception:
+                    free_slots = 0
+                if free_slots <= 0:
+                    continue
+
+                missing = [
+                    endpoint
+                    for key, (endpoint, _) in memory.items()
+                    if key not in connected
+                ]
+                for endpoint in missing[:free_slots]:
                     try:
                         task.handle.connect_peer(endpoint)
                     except Exception:
                         pass
-                task.handle.resume()
-                window.engine._kick_discovery(task.handle)
-                last_prune[task_id] = now
             except Exception:
                 continue
 
-        for task_id in list(last_prune):
+        for task_id in list(known_seeds):
             if task_id not in window.engine.tasks:
-                last_prune.pop(task_id, None)
+                known_seeds.pop(task_id, None)
+                last_reconnect.pop(task_id, None)
 
     timer = QTimer(window)
     timer.setInterval(5000)
     timer.timeout.connect(apply_preference)
     timer.start()
     window._seeder_preference_timer = timer
-    window._seeder_preference_last_prune = last_prune
+    window._seeder_preference_known_seeds = known_seeds
 
 
 def _install_status_bar(window) -> None:
@@ -487,6 +546,46 @@ def _install_tray_quit(window) -> None:
     window.tray_quit.triggered.connect(quit_from_tray)
 
 
+def _warn_unrestored(window) -> None:
+    entries = list(getattr(window.engine, "unrestored", []))
+    if not entries:
+        return
+    sources = "\n".join(f"- {entry.get('source', '?')}" for entry in entries[:20])
+    if len(entries) > 20:
+        sources += f"\n... (+{len(entries) - 20})"
+    if window.config.language == "ko":
+        title = "일부 다운로드를 복원하지 못함"
+        text = (
+            f"저장된 다운로드 {len(entries)}개를 복원하지 못했습니다. "
+            "원본 .torrent 파일이 없어진 경우가 대부분입니다.\n\n"
+            f"{sources}\n\n"
+            "항목을 유지하면, 같은 경로에 파일을 되돌려 놓고 앱을 다시 "
+            "시작했을 때 복원됩니다."
+        )
+        keep_text, drop_text = "유지", "목록에서 삭제"
+    else:
+        title = "Some downloads could not be restored"
+        text = (
+            f"{len(entries)} saved download(s) could not be restored, usually "
+            "because the original .torrent file is gone.\n\n"
+            f"{sources}\n\n"
+            "If you keep them, putting the file back at the same path and "
+            "restarting the app restores them."
+        )
+        keep_text, drop_text = "Keep", "Remove from list"
+
+    box = QMessageBox(window)
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.addButton(keep_text, QMessageBox.ButtonRole.AcceptRole)
+    drop = box.addButton(drop_text, QMessageBox.ButtonRole.DestructiveRole)
+    box.exec()
+    if box.clickedButton() is drop:
+        window.engine.unrestored.clear()
+        window.engine._persist_tasks()
+
+
 def install_desktop_experience(window) -> None:
     """Install drag/drop, tray behavior, peer options, and a live status bar."""
 
@@ -496,3 +595,4 @@ def install_desktop_experience(window) -> None:
     _install_seeder_preference(window)
     _install_status_bar(window)
     _install_tray_quit(window)
+    QTimer.singleShot(0, lambda: _warn_unrestored(window))
