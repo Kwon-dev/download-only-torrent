@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -95,6 +96,10 @@ TEXT = {
     "en": {
         "select_files": "Select files - {title}",
         "select_hint": "Check only the files you want to download.",
+        "small_file_notice": (
+            "Files of {limit} MB or less are unchecked by default. "
+            "You can select them manually."
+        ),
         "select_all": "Select all",
         "clear_all": "Clear all",
         "file": "File",
@@ -113,6 +118,13 @@ TEXT = {
         "settings": "Settings",
         "default_download": "Default download folder",
         "download_limit": "Download limit",
+        "file_filter": "File size filter",
+        "skip_small_files": "Skip files at or below the limit",
+        "min_file_size": "Size threshold",
+        "min_file_size_tip": (
+            "Only affects file preselection for new torrents and magnets. "
+            "1 MB = 1,000,000 bytes. You can manually select skipped files."
+        ),
         "max_peers": "Max peer connections",
         "enable_dht": "Enable DHT",
         "enable_pex": "Enable PEX",
@@ -212,6 +224,10 @@ TEXT = {
     "ko": {
         "select_files": "파일 선택 - {title}",
         "select_hint": "다운로드할 파일만 체크하세요.",
+        "small_file_notice": (
+            "{limit}MB 이하 파일은 기본적으로 선택 해제됩니다. "
+            "필요하면 직접 다시 선택할 수 있습니다."
+        ),
         "select_all": "전체 선택",
         "clear_all": "전체 해제",
         "file": "파일",
@@ -230,6 +246,13 @@ TEXT = {
         "settings": "설정",
         "default_download": "기본 다운로드 폴더",
         "download_limit": "다운로드 속도 제한",
+        "file_filter": "파일 크기 필터",
+        "skip_small_files": "설정한 크기 이하 파일 자동 제외",
+        "min_file_size": "크기 기준",
+        "min_file_size_tip": (
+            "새 토렌트 및 마그넷의 최초 파일 선택에만 적용됩니다. "
+            "1MB는 1,000,000바이트이며, 제외된 파일도 직접 선택할 수 있습니다."
+        ),
         "max_peers": "최대 피어 연결 수",
         "enable_dht": "DHT 사용",
         "enable_pex": "PEX 사용",
@@ -383,14 +406,21 @@ class FileSelectionDialog(QDialog):
         default_dir: str,
         language: str,
         parent=None,
+        *,
+        min_file_size_mb: float | None = None,
     ):
         super().__init__(parent)
         self.language = language
+        self.min_file_size_mb = min_file_size_mb
         self.setWindowTitle(tr(language, "select_files", title=title))
         self.resize(760, 560)
         self.files = files
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(tr(language, "select_hint")))
+        if min_file_size_mb is not None:
+            layout.addWidget(QLabel(tr(
+                language, "small_file_notice", limit=f"{min_file_size_mb:g}"
+            )))
 
         row = QHBoxLayout()
         select_all = QPushButton(tr(language, "select_all"))
@@ -438,6 +468,7 @@ class FileSelectionDialog(QDialog):
 
     def _populate_tree(self) -> None:
         folders: dict[tuple[str, ...], QTreeWidgetItem] = {}
+        unchecked: list[QTreeWidgetItem] = []
         for file in self.files:
             parts = Path(file.path).parts
             parent = self.tree.invisibleRootItem()
@@ -468,6 +499,14 @@ class FileSelectionDialog(QDialog):
             leaf.setCheckState(0, Qt.CheckState.Checked)
             leaf.setData(0, Qt.ItemDataRole.UserRole, file.index)
             parent.addChild(leaf)
+            if (
+                self.min_file_size_mb is not None
+                and file.size <= self.min_file_size_mb * 1_000_000
+            ):
+                unchecked.append(leaf)
+        # Uncheck only after construction so folders show partial selection.
+        for leaf in unchecked:
+            leaf.setCheckState(0, Qt.CheckState.Unchecked)
         self.tree.expandAll()
 
     def _set_all(self, state: Qt.CheckState) -> None:
@@ -627,6 +666,20 @@ class SettingsDialog(QDialog):
         self.download_limit.setValue(config.download_limit_kib)
         form.addRow(tr(lang, "download_limit"), self.download_limit)
 
+        self.skip_small_files = QCheckBox(tr(lang, "skip_small_files"))
+        self.skip_small_files.setChecked(config.skip_small_files)
+        self.min_file_size_mb = QDoubleSpinBox()
+        self.min_file_size_mb.setRange(0, 1_000_000)
+        self.min_file_size_mb.setDecimals(2)
+        self.min_file_size_mb.setSingleStep(1)
+        self.min_file_size_mb.setSuffix(" MB")
+        self.min_file_size_mb.setValue(config.min_file_size_mb)
+        self.min_file_size_mb.setToolTip(tr(lang, "min_file_size_tip"))
+        self.skip_small_files.toggled.connect(self.min_file_size_mb.setEnabled)
+        self.min_file_size_mb.setEnabled(config.skip_small_files)
+        form.addRow(tr(lang, "file_filter"), self.skip_small_files)
+        form.addRow(tr(lang, "min_file_size"), self.min_file_size_mb)
+
         self.max_connections = QSpinBox()
         self.max_connections.setRange(2, 5000)
         self.max_connections.setValue(config.max_connections)
@@ -762,6 +815,8 @@ class SettingsDialog(QDialog):
     def apply(self) -> None:
         self.config.download_dir = self.download_dir.text().strip()
         self.config.download_limit_kib = self.download_limit.value()
+        self.config.skip_small_files = self.skip_small_files.isChecked()
+        self.config.min_file_size_mb = self.min_file_size_mb.value()
         self.config.max_connections = self.max_connections.value()
         self.config.enable_dht = self.dht.isChecked()
         self.config.enable_pex = self.pex.isChecked()
@@ -906,6 +961,10 @@ class MainWindow(QMainWindow):
                 self.config.download_dir,
                 lang,
                 self,
+                min_file_size_mb=(
+                    self.config.min_file_size_mb
+                    if self.config.skip_small_files else None
+                ),
             )
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.config.download_dir = dialog.save_path
@@ -955,6 +1014,10 @@ class MainWindow(QMainWindow):
                 self.config.download_dir,
                 lang,
                 self,
+                min_file_size_mb=(
+                    self.config.min_file_size_mb
+                    if self.config.skip_small_files else None
+                ),
             )
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.config.download_dir = dialog.save_path

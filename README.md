@@ -11,6 +11,7 @@ A small Windows BitTorrent client focused on **download-only use**. It is built 
 - Single-instance forwarding: shell/browser opens are sent to the already-running app
 - Magnet metadata is fetched first, then the file list is shown
 - Per-file checkbox selection before downloading
+- Optional file-size preselection filter (off by default): automatically uncheck files at or below a configurable MB threshold for new .torrent files and magnets; manual overrides remain possible
 - File-selection list sorting by **name or size** by clicking the header
 - Main download list sorting by **name, progress, download speed, piece upload, peers, state, or save path**
 - Sort direction/state is remembered between launches

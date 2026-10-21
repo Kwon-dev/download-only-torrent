@@ -26,6 +26,8 @@ DEFAULT_EXTRA_TRACKERS = "\n".join(
 class AppConfig:
     download_dir: str
     download_limit_kib: int = 0
+    skip_small_files: bool = False
+    min_file_size_mb: float = 10.0
     max_connections: int = 200
     enable_dht: bool = True
     enable_pex: bool = True
@@ -76,6 +78,10 @@ class AppConfig:
         return cls(
             download_dir=str(settings.value("general/download_dir", default_download)),
             download_limit_kib=int(settings.value("network/download_limit_kib", 0)),
+            skip_small_files=_as_bool(settings.value("download/skip_small_files", False)),
+            min_file_size_mb=_as_nonnegative_float(
+                settings.value("download/min_file_size_mb", 10.0), 10.0
+            ),
             max_connections=int(settings.value("network/max_connections", 200)),
             enable_dht=_as_bool(settings.value("network/dht", True)),
             enable_pex=_as_bool(settings.value("network/pex", True)),
@@ -118,6 +124,8 @@ class AppConfig:
         settings = QSettings()
         settings.setValue("general/download_dir", self.download_dir)
         settings.setValue("network/download_limit_kib", self.download_limit_kib)
+        settings.setValue("download/skip_small_files", self.skip_small_files)
+        settings.setValue("download/min_file_size_mb", self.min_file_size_mb)
         settings.setValue("network/max_connections", self.max_connections)
         settings.setValue("network/dht", self.enable_dht)
         settings.setValue("network/pex", self.enable_pex)
@@ -151,6 +159,14 @@ def _as_int(value: object, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _as_nonnegative_float(value: object, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if 0 <= number <= 1_000_000 else default
 
 
 def _as_bool(value: object) -> bool:
