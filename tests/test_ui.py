@@ -298,3 +298,46 @@ def test_resume_saves_are_counted_not_logged():
     log.add(_Alert())
     assert list(log.entries) == []
     assert log.total(log.events)["save_resume_data"] == 1
+
+
+def test_small_file_filter_default_off_and_settings_persist(qapp):
+    from download_only_torrent.config import AppConfig
+
+    config = AppConfig.load()
+    assert config.skip_small_files is False
+    assert config.min_file_size_mb == 10.0
+
+    dialog = ui.SettingsDialog(config)
+    assert not dialog.skip_small_files.isChecked()
+    assert not dialog.min_file_size_mb.isEnabled()
+    dialog.skip_small_files.setChecked(True)
+    dialog.min_file_size_mb.setValue(1.25)
+    assert dialog.min_file_size_mb.isEnabled()
+    dialog.apply()
+
+    restored = AppConfig.load()
+    assert restored.skip_small_files is True
+    assert restored.min_file_size_mb == 1.25
+
+
+def test_small_file_filter_preselects_by_byte_size_and_allows_override(qapp):
+    from PySide6.QtCore import Qt
+
+    files = [
+        ui.TorrentFile(0, "movie.mkv", 20_000_000),
+        ui.TorrentFile(1, "extras/poster.jpg", 10_000_000),
+        ui.TorrentFile(2, "extras/subtitles.srt", 100_000),
+        ui.TorrentFile(3, "extras/trailer.mp4", 10_000_001),
+    ]
+    default_dialog = ui.FileSelectionDialog("test", files, "/tmp", "en")
+    assert default_dialog.selected_indices() == [0, 1, 2, 3]
+
+    filtered = ui.FileSelectionDialog(
+        "test", files, "/tmp", "en", min_file_size_mb=10.0
+    )
+    # At-or-below means equality is excluded; over the limit stays selected.
+    assert filtered.selected_indices() == [0, 3]
+    filtered._set_all(Qt.CheckState.Checked)
+    assert filtered.selected_indices() == [0, 1, 2, 3]
+    filtered._set_all(Qt.CheckState.Unchecked)
+    assert filtered.selected_indices() == []
