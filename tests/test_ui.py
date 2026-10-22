@@ -147,6 +147,13 @@ def test_settings_dialog_splits_general_and_advanced(qapp):
     for widget in (dialog.download_dir.parent(), dialog.max_connections, dialog.theme):
         assert widget in general
     assert dialog.listen_port.parent() in general
+    # The toggle and its MB limit must appear immediately beside each other.
+    filter_row = dialog.skip_small_files.parentWidget()
+    assert filter_row is dialog.min_file_size_mb.parentWidget()
+    assert filter_row in general
+    filter_layout = filter_row.layout()
+    assert filter_layout.itemAt(0).widget() is dialog.skip_small_files
+    assert filter_layout.itemAt(1).widget() is dialog.min_file_size_mb
     for widget in (
         dialog.large_peer_pool,
         dialog.seeder_preference,
