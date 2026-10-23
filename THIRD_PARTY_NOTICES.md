@@ -16,9 +16,9 @@ Official Qt for Python licensing information:
 
 ## Modified libtorrent 2.1.1
 
-This project builds libtorrent from the upstream `v2.1.1` source revision and applies `patches/libtorrent-no-piece-upload.patch` before compiling the Python binding.
+This project builds libtorrent from the upstream `v2.1.1` source revision and modifies its source using `tools/patch_libtorrent_no_piece_upload.py` before compiling the Python binding. The source transformation is a Python script; no `patches/libtorrent-no-piece-upload.patch` file exists in this repository.
 
-The modification removes the normal BitTorrent PIECE payload queueing implementation from `bt_peer_connection::write_piece()`. If that path is entered, the patched implementation records a compile-time marker and disconnects the peer rather than queueing file-piece bytes. The release package includes the exact patch and `PATCHED_LIBTORRENT_BUILD.txt` with build provenance and SHA-256 hashes.
+The modification removes the normal BitTorrent PIECE payload queueing implementation from `bt_peer_connection::write_piece()`. If that path is entered, the patched implementation records a compile-time marker and disconnects the peer rather than queueing file-piece bytes. The release package includes the source transformation scripts under `LICENSES/` and `PATCHED_LIBTORRENT_BUILD.txt` with build provenance and SHA-256 hashes.
 
 A second modification (`tools/patch_libtorrent_peer_turnover.py`) changes how `src/torrent.cpp` picks peers for periodic peer turnover: peers we want pieces from are kept during their first two minutes and while they are sending to us, and the rest are ranked by their current download rate instead of putting every non-seed before any seed.
 

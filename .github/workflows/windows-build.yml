@@ -67,6 +67,21 @@ jobs:
           path: ${{ runner.temp }}\patched-libtorrent-cache
           key: ${{ steps.libtorrent-cache.outputs.cache-primary-key }}
 
+      # Tagged releases embed their version from the tag, not a stale source
+      # constant. This runner-local change does not modify the repository.
+      - name: Stamp tagged release version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v([0-9]+\.[0-9]+\.[0-9]+)$') {
+            throw "Release tag must be vMAJOR.MINOR.PATCH: $env:RELEASE_TAG"
+          }
+          $version = $Matches[1]
+          Set-Content -Path 'download_only_torrent/__init__.py' -Value ('__version__ = "' + $version + '"') -Encoding utf8
+          Write-Host "Building release version $version"
+
       - name: Generate app icon
         run: python tools/generate_icon.py
 
