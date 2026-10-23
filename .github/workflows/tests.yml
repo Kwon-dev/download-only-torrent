@@ -1,12 +1,11 @@
 name: Tests
 
-# Fast checks for every branch push; a pull request shows the result for its
-# head commit. The Windows build (patched libtorrent, PyInstaller package)
-# runs only on main, tags and its schedule; see windows-build.yml.
+# Fast Linux regression tests run on every branch push, including main.
+# The full Windows EXE build runs separately on main, tags and its schedule.
 on:
   workflow_dispatch:
   push:
-    branches-ignore: [main]
+    branches: ['**']
 
 permissions:
   contents: read

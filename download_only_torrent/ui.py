@@ -466,6 +466,22 @@ class FileSelectionDialog(QDialog):
         box.rejected.connect(self.reject)
         layout.addWidget(box)
 
+
+    @classmethod
+    def for_window(cls, title: str, files: list[TorrentFile], window):
+        """Create a picker with the current settings for every entry path."""
+        config = window.config
+        return cls(
+            title,
+            files,
+            config.download_dir,
+            config.language,
+            window,
+            min_file_size_mb=(
+                config.min_file_size_mb if config.skip_small_files else None
+            ),
+        )
+
     def _populate_tree(self) -> None:
         folders: dict[tuple[str, ...], QTreeWidgetItem] = {}
         unchecked: list[QTreeWidgetItem] = []
@@ -961,17 +977,7 @@ class MainWindow(QMainWindow):
             return
         try:
             title, files = self.engine.preview_torrent(path)
-            dialog = FileSelectionDialog(
-                title,
-                files,
-                self.config.download_dir,
-                lang,
-                self,
-                min_file_size_mb=(
-                    self.config.min_file_size_mb
-                    if self.config.skip_small_files else None
-                ),
-            )
+            dialog = FileSelectionDialog.for_window(title, files, self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.config.download_dir = dialog.save_path
                 self.config.save()
@@ -1014,17 +1020,7 @@ class MainWindow(QMainWindow):
             ):
                 return
             title, files = loader.metadata
-            dialog = FileSelectionDialog(
-                title,
-                files,
-                self.config.download_dir,
-                lang,
-                self,
-                min_file_size_mb=(
-                    self.config.min_file_size_mb
-                    if self.config.skip_small_files else None
-                ),
-            )
+            dialog = FileSelectionDialog.for_window(title, files, self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.config.download_dir = dialog.save_path
                 self.config.save()

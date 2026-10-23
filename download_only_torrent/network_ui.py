@@ -88,13 +88,7 @@ def _show_one_torrent_dialog(window, path: str) -> None:
         QMessageBox.critical(window, tr(lang, "torrent_error"), f"{path}\n\n{exc}")
         return
 
-    dialog = FileSelectionDialog(
-        title,
-        files,
-        window.config.download_dir,
-        lang,
-        window,
-    )
+    dialog = FileSelectionDialog.for_window(title, files, window)
     dialog.setWindowModality(Qt.WindowModality.NonModal)
 
     if not hasattr(window, "_multi_torrent_dialogs"):

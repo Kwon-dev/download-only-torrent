@@ -164,9 +164,7 @@ def _open_torrent_file(window, path: str) -> None:
     lang = window.config.language
     try:
         title, files = window.engine.preview_torrent(path)
-        dialog = FileSelectionDialog(
-            title, files, window.config.download_dir, lang, window
-        )
+        dialog = FileSelectionDialog.for_window(title, files, window)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             window.config.download_dir = dialog.save_path
             window.config.save()
@@ -191,9 +189,7 @@ def _open_magnet(window, uri: str) -> None:
         ):
             return
         title, files = loader.metadata
-        dialog = FileSelectionDialog(
-            title, files, window.config.download_dir, lang, window
-        )
+        dialog = FileSelectionDialog.for_window(title, files, window)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             window.config.download_dir = dialog.save_path
             window.config.save()

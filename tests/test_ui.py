@@ -348,3 +348,82 @@ def test_small_file_filter_preselects_by_byte_size_and_allows_override(qapp):
     assert filtered.selected_indices() == [0, 1, 2, 3]
     filtered._set_all(Qt.CheckState.Unchecked)
     assert filtered.selected_indices() == []
+
+
+
+def test_small_file_filter_applies_to_actual_toolbar_picker(qapp, monkeypatch):
+    from download_only_torrent import network_ui
+
+    window = app_module.build_main_window(qapp)
+    window.timer.stop()
+    window.config.skip_small_files = True
+    window.config.min_file_size_mb = 10.0
+    files = [
+        ui.TorrentFile(0, "movie.mkv", 500_000_000),
+        ui.TorrentFile(1, "extras/poster.jpg", 3_000_000),
+        ui.TorrentFile(2, "extras/trailer.mp4", 10_000_000),
+        ui.TorrentFile(3, "extras/long_trailer.mp4", 10_000_001),
+    ]
+    monkeypatch.setattr(
+        window.engine, "preview_torrent", lambda path: ("Demo", files)
+    )
+    monkeypatch.setattr(
+        network_ui.QFileDialog, "getOpenFileNames",
+        lambda *args, **kwargs: (["demo.torrent"], "Torrent files"),
+    )
+    # Exercise the actual toolbar command, which network_ui replaces.
+    window.add_torrent()
+    assert len(window._multi_torrent_dialogs) == 1
+    dialog = next(iter(window._multi_torrent_dialogs))
+    assert dialog.min_file_size_mb == 10.0
+    assert dialog.selected_indices() == [0, 3]
+    dialog.reject()
+
+
+def test_small_file_filter_applies_to_windows_open_requests(qapp, monkeypatch):
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QDialog
+    from download_only_torrent import windows_integration
+
+    window = app_module.build_main_window(qapp)
+    window.timer.stop()
+    window.config.skip_small_files = True
+    window.config.min_file_size_mb = 10.0
+    files = [
+        ui.TorrentFile(0, "video.mkv", 100_000_000),
+        ui.TorrentFile(1, "extras/image.jpg", 100_000),
+    ]
+    monkeypatch.setattr(
+        window.engine, "preview_torrent", lambda path: ("Demo", files)
+    )
+    selections = []
+
+    def accept_selection(dialog):
+        selections.append(dialog.selected_indices())
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(ui.FileSelectionDialog, "exec", accept_selection)
+    monkeypatch.setattr(
+        window.engine, "add_torrent_file",
+        lambda path, save_path, selected: selections.append(list(selected)),
+    )
+    windows_integration._open_torrent_file(window, "demo.torrent")
+    assert selections == [[0], [0]]
+
+    class FakeMetadataDialog:
+        def __init__(self, *args):
+            self.token = "demo-magnet"
+            self.metadata = ("Demo", files)
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(ui, "MagnetMetadataDialog", FakeMetadataDialog)
+    window.engine.pending_magnets["demo-magnet"] = SimpleNamespace(save_path="")
+    monkeypatch.setattr(
+        window.engine, "start_magnet",
+        lambda token, selected: selections.append(list(selected)),
+    )
+    windows_integration._open_magnet(window, "magnet:?xt=urn:btih:example")
+    assert selections == [[0], [0], [0], [0]]
